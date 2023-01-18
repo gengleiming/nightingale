@@ -45,7 +45,11 @@ func consume(events []interface{}, sema *semaphore.Semaphore) {
 func consumeOne(event *models.AlertCurEvent) {
 	LogEvent(event, "consume")
 
-	if err := event.ParseRuleNote(); err != nil {
+	if err := event.ParseRule("rule_name"); err != nil {
+		event.RuleName = fmt.Sprintf("failed to parse rule name: %v", err)
+	}
+
+	if err := event.ParseRule("rule_note"); err != nil {
 		event.RuleNote = fmt.Sprintf("failed to parse rule note: %v", err)
 	}
 
@@ -55,9 +59,7 @@ func consumeOne(event *models.AlertCurEvent) {
 		return
 	}
 
-	fillUsers(event)
-	callback(event)
-	notify(event)
+	HandleEventNotify(event, false)
 }
 
 func persist(event *models.AlertCurEvent) {
@@ -72,9 +74,10 @@ func persist(event *models.AlertCurEvent) {
 	// 不管是告警还是恢复，全量告警里都要记录
 	if err := his.Add(); err != nil {
 		logger.Errorf(
-			"event_persist_his_fail: %v rule_id=%d hash=%s tags=%v timestamp=%d value=%s",
+			"event_persist_his_fail: %v rule_id=%d cluster:%s hash=%s tags=%v timestamp=%d value=%s",
 			err,
 			event.RuleId,
+			event.Cluster,
 			event.Hash,
 			event.TagsJSON,
 			event.TriggerTime,
@@ -97,9 +100,10 @@ func persist(event *models.AlertCurEvent) {
 			if event.Id > 0 {
 				if err := event.Add(); err != nil {
 					logger.Errorf(
-						"event_persist_cur_fail: %v rule_id=%d hash=%s tags=%v timestamp=%d value=%s",
+						"event_persist_cur_fail: %v rule_id=%d cluster:%s hash=%s tags=%v timestamp=%d value=%s",
 						err,
 						event.RuleId,
+						event.Cluster,
 						event.Hash,
 						event.TagsJSON,
 						event.TriggerTime,
@@ -122,9 +126,10 @@ func persist(event *models.AlertCurEvent) {
 	if event.Id > 0 {
 		if err := event.Add(); err != nil {
 			logger.Errorf(
-				"event_persist_cur_fail: %v rule_id=%d hash=%s tags=%v timestamp=%d value=%s",
+				"event_persist_cur_fail: %v rule_id=%d cluster:%s hash=%s tags=%v timestamp=%d value=%s",
 				err,
 				event.RuleId,
+				event.Cluster,
 				event.Hash,
 				event.TagsJSON,
 				event.TriggerTime,
@@ -142,7 +147,6 @@ func fillUsers(e *models.AlertCurEvent) {
 		if err != nil {
 			continue
 		}
-
 		gids = append(gids, gid)
 	}
 
@@ -161,14 +165,6 @@ func fillUsers(e *models.AlertCurEvent) {
 
 func mapKeys(m map[int64]struct{}) []int64 {
 	lst := make([]int64, 0, len(m))
-	for k := range m {
-		lst = append(lst, k)
-	}
-	return lst
-}
-
-func StringSetKeys(m map[string]struct{}) []string {
-	lst := make([]string, 0, len(m))
 	for k := range m {
 		lst = append(lst, k)
 	}

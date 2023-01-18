@@ -5,16 +5,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/didi/nightingale/v5/src/models"
-	"github.com/didi/nightingale/v5/src/server/common/conv"
-	"github.com/didi/nightingale/v5/src/server/config"
-	"github.com/didi/nightingale/v5/src/server/engine"
-	promstat "github.com/didi/nightingale/v5/src/server/stat"
-
 	"github.com/gin-gonic/gin"
 	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/logger"
-	"github.com/toolkits/pkg/str"
+
+	"github.com/didi/nightingale/v5/src/models"
+	"github.com/didi/nightingale/v5/src/pkg/poster"
+	"github.com/didi/nightingale/v5/src/server/common/conv"
+	"github.com/didi/nightingale/v5/src/server/config"
+	"github.com/didi/nightingale/v5/src/server/engine"
+	"github.com/didi/nightingale/v5/src/server/naming"
+	promstat "github.com/didi/nightingale/v5/src/server/stat"
 )
 
 func pushEventToQueue(c *gin.Context) {
@@ -39,14 +40,17 @@ func pushEventToQueue(c *gin.Context) {
 		event.TagsMap[arr[0]] = arr[1]
 	}
 
-	// isMuted only need TriggerTime RuleName and TagsMap
-	if engine.IsMuted(event) {
+	if engine.EventMuteStrategy(nil, event) {
 		logger.Infof("event_muted: rule_id=%d %s", event.RuleId, event.Hash)
 		ginx.NewRender(c).Message(nil)
 		return
 	}
 
-	if err := event.ParseRuleNote(); err != nil {
+	if err := event.ParseRule("rule_name"); err != nil {
+		event.RuleName = fmt.Sprintf("failed to parse rule name: %v", err)
+	}
+
+	if err := event.ParseRule("rule_note"); err != nil {
 		event.RuleNote = fmt.Sprintf("failed to parse rule note: %v", err)
 	}
 
@@ -63,10 +67,7 @@ func pushEventToQueue(c *gin.Context) {
 	event.NotifyChannels = strings.Join(event.NotifyChannelsJSON, " ")
 	event.NotifyGroups = strings.Join(event.NotifyGroupsJSON, " ")
 
-	cn := config.ReaderClient.GetClusterName()
-	if cn != "" {
-		promstat.CounterAlertsTotal.WithLabelValues(cn).Inc()
-	}
+	promstat.CounterAlertsTotal.WithLabelValues(event.Cluster).Inc()
 
 	engine.LogEvent(event, "http_push_queue")
 	if !engine.EventQueue.PushFront(event) {
@@ -87,34 +88,60 @@ type eventForm struct {
 func judgeEvent(c *gin.Context) {
 	var form eventForm
 	ginx.BindJSON(c, &form)
-	re, exists := engine.RuleEvalForExternal.Get(form.RuleId)
+	ruleContext, exists := engine.GetExternalAlertRule(form.Cluster, form.RuleId)
 	if !exists {
 		ginx.Bomb(200, "rule not exists")
 	}
-	re.Judge(form.Cluster, form.Vectors)
+	ruleContext.HandleVectors(form.Vectors, "http")
 	ginx.NewRender(c).Message(nil)
 }
 
 func makeEvent(c *gin.Context) {
 	var events []*eventForm
 	ginx.BindJSON(c, &events)
-	now := time.Now().Unix()
+	//now := time.Now().Unix()
 	for i := 0; i < len(events); i++ {
-		re, exists := engine.RuleEvalForExternal.Get(events[i].RuleId)
+		node, err := naming.ClusterHashRing.GetNode(events[i].Cluster, fmt.Sprintf("%d", events[i].RuleId))
+		if err != nil {
+			logger.Warningf("event:%+v get node err:%v", events[i], err)
+			ginx.Bomb(200, "event node not exists")
+		}
+
+		if node != config.C.Heartbeat.Endpoint {
+			err := forwardEvent(events[i], node)
+			if err != nil {
+				logger.Warningf("event:%+v forward err:%v", events[i], err)
+				ginx.Bomb(200, "event forward error")
+			}
+			continue
+		}
+
+		ruleContext, exists := engine.GetExternalAlertRule(events[i].Cluster, events[i].RuleId)
 		logger.Debugf("handle event:%+v exists:%v", events[i], exists)
 		if !exists {
 			ginx.Bomb(200, "rule not exists")
 		}
 
 		if events[i].Alert {
-			go re.MakeNewEvent("http", now, events[i].Cluster, events[i].Vectors)
+			go ruleContext.HandleVectors(events[i].Vectors, "http")
 		} else {
 			for _, vector := range events[i].Vectors {
-				hash := str.MD5(fmt.Sprintf("%d_%s", events[i].RuleId, vector.Key))
-				now := vector.Timestamp
-				go re.RecoverEvent(hash, now, vector.Value)
+				alertVector := engine.NewAlertVector(ruleContext, nil, vector, "http")
+				readableString := vector.ReadableValue()
+				go ruleContext.RecoverSingle(alertVector.Hash(), vector.Timestamp, &readableString)
 			}
 		}
 	}
 	ginx.NewRender(c).Message(nil)
+}
+
+// event 不归本实例处理，转发给对应的实例
+func forwardEvent(event *eventForm, instance string) error {
+	ur := fmt.Sprintf("http://%s/v1/n9e/make-event", instance)
+	res, code, err := poster.PostJSON(ur, time.Second*5, []*eventForm{event}, 3)
+	if err != nil {
+		return err
+	}
+	logger.Infof("forward event: result=succ url=%s code=%d event:%v response=%s", ur, code, event, string(res))
+	return nil
 }

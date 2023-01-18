@@ -3,9 +3,9 @@ package models
 import (
 	"bytes"
 	"fmt"
-	"html/template"
 	"strconv"
 	"strings"
+	"text/template"
 
 	"github.com/didi/nightingale/v5/src/pkg/tplx"
 )
@@ -63,10 +63,11 @@ type AggrRule struct {
 	Value string
 }
 
-func (e *AlertCurEvent) ParseRuleNote() error {
-	e.RuleNote = strings.TrimSpace(e.RuleNote)
+func (e *AlertCurEvent) ParseRule(field string) error {
+	f := e.GetField(field)
+	f = strings.TrimSpace(f)
 
-	if e.RuleNote == "" {
+	if f == "" {
 		return nil
 	}
 
@@ -75,8 +76,8 @@ func (e *AlertCurEvent) ParseRuleNote() error {
 		"{{$value := .TriggerValue}}",
 	}
 
-	text := strings.Join(append(defs, e.RuleNote), "")
-	t, err := template.New(fmt.Sprint(e.RuleId)).Funcs(tplx.TemplateFuncMap).Parse(text)
+	text := strings.Join(append(defs, f), "")
+	t, err := template.New(fmt.Sprint(e.RuleId)).Funcs(template.FuncMap(tplx.TemplateFuncMap)).Parse(text)
 	if err != nil {
 		return err
 	}
@@ -87,7 +88,13 @@ func (e *AlertCurEvent) ParseRuleNote() error {
 		return err
 	}
 
-	e.RuleNote = body.String()
+	if field == "rule_name" {
+		e.RuleName = body.String()
+	}
+
+	if field == "rule_note" {
+		e.RuleNote = body.String()
+	}
 	return nil
 }
 
@@ -133,6 +140,8 @@ func (e *AlertCurEvent) GetField(field string) string {
 		return fmt.Sprint(e.RuleId)
 	case "rule_name":
 		return e.RuleName
+	case "rule_note":
+		return e.RuleNote
 	case "severity":
 		return fmt.Sprint(e.Severity)
 	case "runbook_url":
@@ -411,9 +420,9 @@ func AlertCurEventGetByIds(ids []int64) ([]*AlertCurEvent, error) {
 	return lst, err
 }
 
-func AlertCurEventGetByRule(ruleId int64) ([]*AlertCurEvent, error) {
+func AlertCurEventGetByRuleIdAndCluster(ruleId int64, cluster string) ([]*AlertCurEvent, error) {
 	var lst []*AlertCurEvent
-	err := DB().Where("rule_id=?", ruleId).Find(&lst).Error
+	err := DB().Where("rule_id=? and cluster=?", ruleId, cluster).Find(&lst).Error
 	return lst, err
 }
 

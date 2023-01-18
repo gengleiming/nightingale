@@ -136,7 +136,9 @@ func (m *AlertMute) Add() error {
 	if err := m.Verify(); err != nil {
 		return err
 	}
-	m.CreateAt = time.Now().Unix()
+	now := time.Now().Unix()
+	m.CreateAt = now
+	m.UpdateAt = now
 	return Insert(m)
 }
 
@@ -174,7 +176,7 @@ func AlertMuteStatistics(cluster string) (*Statistics, error) {
 		return nil, err
 	}
 
-	session := DB().Model(&AlertMute{}).Select("count(*) as total", "max(create_at) as last_updated")
+	session := DB().Model(&AlertMute{}).Select("count(*) as total", "max(update_at) as last_updated")
 	if cluster != "" {
 		session = session.Where("(cluster like ? or cluster = ?)", "%"+cluster+"%", ClusterAll)
 	}
@@ -201,6 +203,11 @@ func AlertMuteGetsByCluster(cluster string) ([]*AlertMute, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	if cluster == "" {
+		return lst, nil
+	}
+
 	for _, m := range lst {
 		if MatchCluster(m.Cluster, cluster) {
 			mlst = append(mlst, m)

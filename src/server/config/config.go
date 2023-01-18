@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"html/template"
 	"log"
 	"net"
 	"os"
+	"path"
 	"plugin"
 	"runtime"
 	"strings"
@@ -13,12 +15,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/koding/multiconfig"
+	"github.com/pkg/errors"
+	"github.com/toolkits/pkg/file"
+	"github.com/toolkits/pkg/runner"
 
 	"github.com/didi/nightingale/v5/src/models"
 	"github.com/didi/nightingale/v5/src/notifier"
 	"github.com/didi/nightingale/v5/src/pkg/httpx"
 	"github.com/didi/nightingale/v5/src/pkg/logx"
 	"github.com/didi/nightingale/v5/src/pkg/ormx"
+	"github.com/didi/nightingale/v5/src/pkg/secu"
+	"github.com/didi/nightingale/v5/src/pkg/tplx"
 	"github.com/didi/nightingale/v5/src/storage"
 )
 
@@ -27,7 +34,68 @@ var (
 	once sync.Once
 )
 
-func MustLoad(fpaths ...string) {
+func DealConfigCrypto(key string) {
+	decryptDsn, err := secu.DealWithDecrypt(C.DB.DSN, key)
+	if err != nil {
+		fmt.Println("failed to decrypt the db dsn", err)
+		os.Exit(1)
+	}
+	C.DB.DSN = decryptDsn
+
+	decryptRedisPwd, err := secu.DealWithDecrypt(C.Redis.Password, key)
+	if err != nil {
+		fmt.Println("failed to decrypt the redis password", err)
+		os.Exit(1)
+	}
+	C.Redis.Password = decryptRedisPwd
+
+	decryptSmtpPwd, err := secu.DealWithDecrypt(C.SMTP.Pass, key)
+	if err != nil {
+		fmt.Println("failed to decrypt the smtp password", err)
+		os.Exit(1)
+	}
+	C.SMTP.Pass = decryptSmtpPwd
+
+	decryptHookPwd, err := secu.DealWithDecrypt(C.Alerting.Webhook.BasicAuthPass, key)
+	if err != nil {
+		fmt.Println("failed to decrypt the alert webhook password", err)
+		os.Exit(1)
+	}
+	C.Alerting.Webhook.BasicAuthPass = decryptHookPwd
+
+	decryptIbexPwd, err := secu.DealWithDecrypt(C.Ibex.BasicAuthPass, key)
+	if err != nil {
+		fmt.Println("failed to decrypt the ibex password", err)
+		os.Exit(1)
+	}
+	C.Ibex.BasicAuthPass = decryptIbexPwd
+
+	if len(C.Readers) == 0 {
+		C.Reader.ClusterName = C.ClusterName
+		C.Readers = append(C.Readers, C.Reader)
+	}
+
+	for index, v := range C.Readers {
+		decryptReaderPwd, err := secu.DealWithDecrypt(v.BasicAuthPass, key)
+		if err != nil {
+			fmt.Printf("failed to decrypt the reader password: %s , error: %s", v.BasicAuthPass, err.Error())
+			os.Exit(1)
+		}
+		C.Readers[index].BasicAuthPass = decryptReaderPwd
+	}
+
+	for index, v := range C.Writers {
+		decryptWriterPwd, err := secu.DealWithDecrypt(v.BasicAuthPass, key)
+		if err != nil {
+			fmt.Printf("failed to decrypt the writer password: %s , error: %s", v.BasicAuthPass, err.Error())
+			os.Exit(1)
+		}
+		C.Writers[index].BasicAuthPass = decryptWriterPwd
+	}
+
+}
+
+func MustLoad(key string, fpaths ...string) {
 	once.Do(func() {
 		loaders := []multiconfig.Loader{
 			&multiconfig.TagLoader{},
@@ -65,6 +133,8 @@ func MustLoad(fpaths ...string) {
 			Validator: multiconfig.MultiValidator(&multiconfig.RequiredValidator{}),
 		}
 		m.MustLoad(C)
+
+		DealConfigCrypto(key)
 
 		if C.EngineDelay == 0 {
 			C.EngineDelay = 120
@@ -104,48 +174,10 @@ func MustLoad(fpaths ...string) {
 
 		C.Heartbeat.Endpoint = fmt.Sprintf("%s:%d", C.Heartbeat.IP, C.HTTP.Port)
 
-		if C.Alerting.Webhook.Enable {
-			if C.Alerting.Webhook.Timeout == "" {
-				C.Alerting.Webhook.TimeoutDuration = time.Second * 5
-			} else {
-				dur, err := time.ParseDuration(C.Alerting.Webhook.Timeout)
-				if err != nil {
-					fmt.Println("failed to parse Alerting.Webhook.Timeout")
-					os.Exit(1)
-				}
-				C.Alerting.Webhook.TimeoutDuration = dur
-			}
-		}
-
-		if C.Alerting.CallPlugin.Enable {
-			if runtime.GOOS == "windows" {
-				fmt.Println("notify plugin on unsupported os:", runtime.GOOS)
-				os.Exit(1)
-			}
-
-			p, err := plugin.Open(C.Alerting.CallPlugin.PluginPath)
-			if err != nil {
-				fmt.Println("failed to load plugin:", err)
-				os.Exit(1)
-			}
-
-			caller, err := p.Lookup(C.Alerting.CallPlugin.Caller)
-			if err != nil {
-				fmt.Println("failed to lookup plugin Caller:", err)
-				os.Exit(1)
-			}
-
-			ins, ok := caller.(notifier.Notifier)
-			if !ok {
-				log.Println("notifier interface not implemented")
-				os.Exit(1)
-			}
-
-			notifier.Instance = ins
-		}
+		C.Alerting.check()
 
 		if C.WriterOpt.QueueMaxSize <= 0 {
-			C.WriterOpt.QueueMaxSize = 100000
+			C.WriterOpt.QueueMaxSize = 10000000
 		}
 
 		if C.WriterOpt.QueuePopSize <= 0 {
@@ -153,10 +185,18 @@ func MustLoad(fpaths ...string) {
 		}
 
 		if C.WriterOpt.QueueCount <= 0 {
-			C.WriterOpt.QueueCount = 100
+			C.WriterOpt.QueueCount = 1000
 		}
 
-		for _, write := range C.Writers {
+		if C.WriterOpt.ShardingKey == "" {
+			C.WriterOpt.ShardingKey = "ident"
+		}
+
+		for i, write := range C.Writers {
+			if C.Writers[i].ClusterName == "" {
+				C.Writers[i].ClusterName = C.ClusterName
+			}
+
 			for _, relabel := range write.WriteRelabels {
 				regex, ok := relabel.Regex.(string)
 				if !ok {
@@ -190,11 +230,12 @@ func MustLoad(fpaths ...string) {
 
 type Config struct {
 	RunMode            string
-	ClusterName        string
+	ClusterName        string // 监控对象上报时，指定的集群名称
 	BusiGroupLabelKey  string
 	EngineDelay        int64
 	DisableUsageReport bool
 	ReaderFrom         string
+	LabelRewrite       bool
 	ForceUseServerTS   bool
 	Log                logx.Config
 	HTTP               httpx.Config
@@ -208,10 +249,12 @@ type Config struct {
 	WriterOpt          WriterGlobalOpt
 	Writers            []WriterOptions
 	Reader             PromOption
+	Readers            []PromOption
 	Ibex               Ibex
 }
 
 type WriterOptions struct {
+	ClusterName   string
 	Url           string
 	BasicAuthUser string
 	BasicAuthPass string
@@ -236,6 +279,7 @@ type WriterGlobalOpt struct {
 	QueueCount   int
 	QueueMaxSize int
 	QueuePopSize int
+	ShardingKey  string
 }
 
 type HeartbeatConfig struct {
@@ -255,6 +299,7 @@ type SMTPConfig struct {
 }
 
 type Alerting struct {
+	Timeout               int64
 	TemplatesDir          string
 	NotifyConcurrency     int
 	NotifyBuiltinChannels []string
@@ -262,6 +307,89 @@ type Alerting struct {
 	CallPlugin            CallPlugin
 	RedisPub              RedisPub
 	Webhook               Webhook
+}
+
+func (a *Alerting) check() {
+	if a.Webhook.Enable {
+		if a.Webhook.Timeout == "" {
+			a.Webhook.TimeoutDuration = time.Second * 5
+		} else {
+			dur, err := time.ParseDuration(C.Alerting.Webhook.Timeout)
+			if err != nil {
+				fmt.Println("failed to parse Alerting.Webhook.Timeout")
+				os.Exit(1)
+			}
+			a.Webhook.TimeoutDuration = dur
+		}
+	}
+
+	if a.CallPlugin.Enable {
+		if runtime.GOOS == "windows" {
+			fmt.Println("notify plugin on unsupported os:", runtime.GOOS)
+			os.Exit(1)
+		}
+
+		p, err := plugin.Open(a.CallPlugin.PluginPath)
+		if err != nil {
+			fmt.Println("failed to load plugin:", err)
+			os.Exit(1)
+		}
+
+		caller, err := p.Lookup(a.CallPlugin.Caller)
+		if err != nil {
+			fmt.Println("failed to lookup plugin Caller:", err)
+			os.Exit(1)
+		}
+
+		ins, ok := caller.(notifier.Notifier)
+		if !ok {
+			log.Println("notifier interface not implemented")
+			os.Exit(1)
+		}
+
+		notifier.Instance = ins
+	}
+
+	if a.TemplatesDir == "" {
+		a.TemplatesDir = path.Join(runner.Cwd, "etc", "template")
+	}
+
+	if a.Timeout == 0 {
+		a.Timeout = 30000
+	}
+}
+
+func (a *Alerting) ListTpls() (map[string]*template.Template, error) {
+	filenames, err := file.FilesUnder(a.TemplatesDir)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to exec FilesUnder")
+	}
+
+	if len(filenames) == 0 {
+		return nil, errors.New("no tpl files under " + a.TemplatesDir)
+	}
+
+	tplFiles := make([]string, 0, len(filenames))
+	for i := 0; i < len(filenames); i++ {
+		if strings.HasSuffix(filenames[i], ".tpl") {
+			tplFiles = append(tplFiles, filenames[i])
+		}
+	}
+
+	if len(tplFiles) == 0 {
+		return nil, errors.New("no tpl files under " + a.TemplatesDir)
+	}
+
+	tpls := make(map[string]*template.Template)
+	for _, tplFile := range tplFiles {
+		tplpath := path.Join(a.TemplatesDir, tplFile)
+		tpl, err := template.New(tplFile).Funcs(tplx.TemplateFuncMap).ParseFiles(tplpath)
+		if err != nil {
+			return nil, errors.WithMessage(err, "failed to parse tpl: "+tplpath)
+		}
+		tpls[tplFile] = tpl
+	}
+	return tpls, nil
 }
 
 type CallScript struct {
