@@ -22,7 +22,7 @@ type AlertSubscribe struct {
 	Cate              string       `json:"cate"`
 	DatasourceIds     string       `json:"-" gorm:"datasource_ids"` // datasource ids
 	DatasourceIdsJson []int64      `json:"datasource_ids" gorm:"-"` // for fe
-	Cluster           string       `json:"cluster"`                 // take effect by clusters, seperated by space
+	Cluster           string       `json:"cluster"`                 // take effect by clusters, separated by space
 	RuleId            int64        `json:"rule_id"`
 	Severities        string       `json:"-" gorm:"severities"` // sub severity
 	SeveritiesJson    []int        `json:"severities" gorm:"-"` // for fe
@@ -45,10 +45,13 @@ type AlertSubscribe struct {
 	CreateAt          int64        `json:"create_at"`
 	UpdateBy          string       `json:"update_by"`
 	UpdateAt          int64        `json:"update_at"`
+	UpdateByNickname  string       `json:"update_by_nickname" gorm:"-"`
 	ITags             []TagFilter  `json:"-" gorm:"-"` // inner tags
 	BusiGroups        ormx.JSONArr `json:"busi_groups"`
 	IBusiGroups       []TagFilter  `json:"-" gorm:"-"` // inner busiGroups
 	RuleIds           []int64      `json:"rule_ids" gorm:"serializer:json"`
+	NotifyRuleIds     []int64      `json:"notify_rule_ids" gorm:"serializer:json"`
+	NotifyVersion     int          `json:"notify_version"`
 	RuleNames         []string     `json:"rule_names" gorm:"-"`
 }
 
@@ -114,6 +117,21 @@ func (s *AlertSubscribe) Verify() error {
 		return errors.New("severities is required")
 	}
 
+	if s.NotifyVersion == 1 {
+		if len(s.NotifyRuleIds) == 0 {
+			return errors.New("no notify rules selected")
+		}
+
+		s.UserGroupIds = ""
+		s.RedefineChannels = 0
+		s.NewChannels = ""
+		s.RedefineWebhooks = 0
+		s.Webhooks = ""
+		s.RedefineSeverity = 0
+		s.NewSeverity = 0
+		return nil
+	}
+
 	if s.UserGroupIds != "" && s.NewChannels == "" {
 		// 如果指定了用户组，那么新告警的通知渠道必须指定，否则容易出现告警规则中没有指定通知渠道，导致订阅通知时，没有通知渠道
 		return errors.New("new_channels is required")
@@ -124,6 +142,10 @@ func (s *AlertSubscribe) Verify() error {
 		if _, err := strconv.ParseInt(ugids[i], 10, 64); err != nil {
 			return errors.New("user_group_ids invalid")
 		}
+	}
+
+	if s.NotifyVersion == 0 {
+		s.NotifyRuleIds = []int64{}
 	}
 
 	return nil
@@ -319,6 +341,27 @@ func (s *AlertSubscribe) Update(ctx *ctx.Context, selectField interface{}, selec
 	return DB(ctx).Model(s).Select(selectField, selectFields...).Updates(s).Error
 }
 
+// UpdateFull 整行替换式更新（同 AlertMute.Update）：Id/GroupId/CreateAt/CreateBy 强制保留
+// 旧值，其余列全部以 ref 为准——ref 必须基于 DB2FE 后的完整现有行构造，否则未触及的
+// 序列化字段会被空值清掉。
+func (s *AlertSubscribe) UpdateFull(ctx *ctx.Context, ref AlertSubscribe) error {
+	ref.Id = s.Id
+	ref.GroupId = s.GroupId
+	ref.CreateAt = s.CreateAt
+	ref.CreateBy = s.CreateBy
+	ref.UpdateAt = time.Now().Unix()
+
+	if err := ref.Verify(); err != nil {
+		return err
+	}
+
+	if err := ref.FE2DB(); err != nil {
+		return err
+	}
+
+	return DB(ctx).Model(s).Select("*").Updates(ref).Error
+}
+
 func AlertSubscribeDel(ctx *ctx.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
@@ -371,6 +414,24 @@ func (s *AlertSubscribe) MatchProd(prod string) bool {
 	return s.Prod == prod
 }
 
+func (s *AlertSubscribe) MatchCate(cate string) bool {
+	if s.Cate == "" || cate == "" {
+		return true
+	}
+
+	// host 事件只投递给显式订阅 host 的规则，此分支须在 prometheus 通配之前
+	if cate == HOST {
+		return s.Cate == HOST
+	}
+
+	// 存量数据中的 prometheus 多为历史表单默认值而非筛选意图，视为不过滤
+	if s.Cate == PROMETHEUS {
+		return true
+	}
+
+	return s.Cate == cate
+}
+
 func (s *AlertSubscribe) MatchCluster(dsId int64) bool {
 	// 没有配置数据源, 或者事件不需要关联数据源
 	// do not match any datasource or event not related to datasource
@@ -403,6 +464,12 @@ func (s *AlertSubscribe) ModifyEvent(event *AlertCurEvent) {
 		// 将 callback 重置为空，防止事件被订阅之后，再次将事件发送给回调地址
 		event.Callbacks = ""
 		event.CallbacksJSON = []string{}
+	}
+
+	if len(s.NotifyRuleIds) > 0 {
+		event.NotifyRuleIds = s.NotifyRuleIds
+	} else {
+		event.NotifyRuleIds = []int64{}
 	}
 
 	event.NotifyGroups = s.UserGroupIds

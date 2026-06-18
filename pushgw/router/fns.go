@@ -3,6 +3,7 @@ package router
 import (
 	"github.com/ccfos/nightingale/v6/memsto"
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pushgw/pstat"
 
 	"github.com/prometheus/prometheus/prompb"
 	"github.com/toolkits/pkg/logger"
@@ -108,21 +109,30 @@ func (rt *Router) debugSample(remoteAddr string, v *prompb.TimeSeries) {
 }
 
 func (rt *Router) DropSample(v *prompb.TimeSeries) bool {
-	filters := rt.Pushgw.DropSample
-	if len(filters) == 0 {
+	// 快速路径：检查仅 __name__ 的过滤器 O(1)
+	if len(rt.dropByNameOnly) > 0 {
+		for i := 0; i < len(v.Labels); i++ {
+			if v.Labels[i].Name == "__name__" {
+				if _, ok := rt.dropByNameOnly[v.Labels[i].Value]; ok {
+					return true
+				}
+				break // __name__ 只会出现一次，找到后直接跳出
+			}
+		}
+	}
+
+	// 慢速路径：处理复杂的多条件过滤器
+	if len(rt.dropComplex) == 0 {
 		return false
 	}
 
-	labelMap := make(map[string]string)
+	// 只有复杂过滤器存在时才创建 labelMap
+	labelMap := make(map[string]string, len(v.Labels))
 	for i := 0; i < len(v.Labels); i++ {
 		labelMap[v.Labels[i].Name] = v.Labels[i].Value
 	}
 
-	for _, filter := range filters {
-		if len(filter) == 0 {
-			continue
-		}
-
+	for _, filter := range rt.dropComplex {
 		if matchSample(filter, labelMap) {
 			return true
 		}
@@ -145,49 +155,18 @@ func matchSample(filterMap, sampleMap map[string]string) bool {
 	return true
 }
 
-func (rt *Router) ForwardByIdent(clientIP string, ident string, v *prompb.TimeSeries) error {
+func (rt *Router) ForwardToQueue(clientIP string, queueid string, v *prompb.TimeSeries) error {
 	v = rt.BeforePush(clientIP, v)
 	if v == nil {
 		return nil
 	}
 
-	IdentStats.Increment(ident, 1)
 	if rt.DropSample(v) {
-		CounterDropSampleTotal.WithLabelValues(ident).Inc()
+		pstat.CounterDropSampleTotal.Inc()
 		return nil
 	}
 
-	count := IdentStats.Get(ident)
-	if count > rt.Pushgw.IdentDropThreshold {
-		CounterDropSampleTotal.WithLabelValues(ident).Inc()
-		// 单个 ident 的样本数超过阈值，不算异常，不影响其他机器的上报，不返回 err
-		return nil
-	}
-
-	return rt.Writers.PushSample(ident, *v)
-}
-
-func (rt *Router) ForwardByMetric(clientIP string, metric string, v *prompb.TimeSeries) error {
-	v = rt.BeforePush(clientIP, v)
-	rt.debugSample(clientIP, v)
-	if v == nil {
-		return nil
-	}
-
-	IdentStats.Increment(metric, 1)
-	if rt.DropSample(v) {
-		CounterDropSampleTotal.WithLabelValues(metric).Inc()
-		return nil
-	}
-
-	var hashkey string
-	if len(metric) >= 2 {
-		hashkey = metric[0:2]
-	} else {
-		hashkey = metric[0:1]
-	}
-
-	return rt.Writers.PushSample(hashkey, *v)
+	return rt.Writers.PushSample(queueid, *v)
 }
 
 func (rt *Router) BeforePush(clientIP string, v *prompb.TimeSeries) *prompb.TimeSeries {

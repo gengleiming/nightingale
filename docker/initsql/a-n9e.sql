@@ -61,7 +61,7 @@ CREATE TABLE `configs` (
     `external`  bigint DEFAULT 0 COMMENT '0\\:built-in 1\\:external',
     `encrypted` bigint DEFAULT 0 COMMENT '0\\:plaintext 1\\:ciphertext',
     `create_at` bigint DEFAULT 0 COMMENT 'create_at',
-    `create_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'cerate_by',
+    `create_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'create_by',
     `update_at` bigint DEFAULT 0 COMMENT 'update_at',
     `update_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'update_by',
     PRIMARY KEY (`id`)
@@ -107,12 +107,6 @@ insert into `role_operation`(role_name, operation) values('Standard', '/help/mig
 insert into `role_operation`(role_name, operation) values('Standard', '/alert-rules-built-in');
 insert into `role_operation`(role_name, operation) values('Standard', '/dashboards-built-in');
 insert into `role_operation`(role_name, operation) values('Standard', '/trace/dependencies');
-
-insert into `role_operation`(role_name, operation) values('Admin', '/help/source');
-insert into `role_operation`(role_name, operation) values('Admin', '/help/sso');
-insert into `role_operation`(role_name, operation) values('Admin', '/help/notification-tpls');
-insert into `role_operation`(role_name, operation) values('Admin', '/help/notification-settings');
-
 insert into `role_operation`(role_name, operation) values('Standard', '/users');
 insert into `role_operation`(role_name, operation) values('Standard', '/user-groups');
 insert into `role_operation`(role_name, operation) values('Standard', '/user-groups/add');
@@ -198,6 +192,7 @@ CREATE TABLE `board` (
     `create_by` varchar(64) not null default '',
     `update_at` bigint not null default 0,
     `update_by` varchar(64) not null default '',
+    `note` varchar(1024) not null default '' comment 'note',
     `public_cate` bigint NOT NULL NOT NULL DEFAULT 0 COMMENT '0 anonymous 1 login 2 busi',
     PRIMARY KEY (`id`),
     UNIQUE KEY (`group_id`, `name`),
@@ -291,11 +286,14 @@ CREATE TABLE `alert_rule` (
     `append_tags` varchar(255) not null default '' comment 'split by space: service=n9e mod=api',
     `annotations` text not null comment 'annotations',
     `extra_config` text,
+    `notify_rule_ids` varchar(1024) DEFAULT '',
+    `notify_version` int DEFAULT 0,
     `create_at` bigint not null default 0,
     `create_by` varchar(64) not null default '',
     `update_at` bigint not null default 0,
     `update_by` varchar(64) not null default '',
     `cron_pattern` varchar(64),
+    `time_zone` varchar(64) not null default '',
     `datasource_queries` text,
     PRIMARY KEY (`id`),
     KEY (`group_id`),
@@ -351,6 +349,8 @@ CREATE TABLE `alert_subscribe` (
     `extra_config` text,
     `redefine_webhooks` tinyint(1) default 0,
     `for_duration` bigint not null default 0,
+    `notify_rule_ids` varchar(1024) DEFAULT '',
+    `notify_version` int DEFAULT 0,
     `create_at` bigint not null default 0,
     `create_by` varchar(64) not null default '',
     `update_at` bigint not null default 0,
@@ -467,6 +467,7 @@ CREATE TABLE `alert_cur_event` (
     `rule_config` text not null comment 'annotations',
     `tags` varchar(1024) not null default '' comment 'merge data_tags rule_tags, split by ,,',
     `original_tags` text comment 'labels key=val,,k2=v2',
+    `notify_rule_ids` text COMMENT 'notify rule ids',
     PRIMARY KEY (`id`),
     KEY (`hash`),
     KEY (`rule_id`),
@@ -509,6 +510,7 @@ CREATE TABLE `alert_his_event` (
     `original_tags` text comment 'labels key=val,,k2=v2',
     `annotations` text not null comment 'annotations',
     `rule_config` text not null comment 'annotations',
+    `notify_rule_ids` text COMMENT 'notify rule ids',
     PRIMARY KEY (`id`),
     INDEX `idx_last_eval_time` (`last_eval_time`),
     KEY (`hash`),
@@ -533,7 +535,7 @@ CREATE TABLE `builtin_components` (
   `updated_by` varchar(191) NOT NULL DEFAULT '' COMMENT '''updater''',
   `disabled` int NOT NULL DEFAULT 0 COMMENT '''is disabled or not''',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `idx_ident` (`ident`)
+  KEY (`ident`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `builtin_payloads` (
@@ -546,6 +548,7 @@ CREATE TABLE `builtin_payloads` (
   `name` varchar(191) NOT NULL COMMENT '''name of payload''',
   `tags` varchar(191) NOT NULL DEFAULT '' COMMENT '''tags of payload''',
   `content` longtext NOT NULL COMMENT '''content of payload''',
+  `note` varchar(1024) NOT NULL DEFAULT '' COMMENT '''note of payload''',
   `created_at` bigint(20) NOT NULL DEFAULT 0 COMMENT '''create time''',
   `created_by` varchar(191) NOT NULL DEFAULT '' COMMENT '''creator''',
   `updated_at` bigint(20) NOT NULL DEFAULT 0 COMMENT '''update time''',
@@ -560,6 +563,7 @@ CREATE TABLE `builtin_payloads` (
 
 CREATE TABLE notification_record (
     `id` BIGINT PRIMARY KEY AUTO_INCREMENT,
+    `notify_rule_id` BIGINT NOT NULL DEFAULT 0,
     `event_id`  bigint NOT NULL COMMENT 'event history id',
     `sub_id`  bigint COMMENT 'subscribed rule id',
     `channel` varchar(255) NOT NULL COMMENT 'notification channel name',
@@ -631,13 +635,16 @@ CREATE TABLE `alerting_engines`
     `datasource_id` bigint not null default 0 comment 'datasource id',
     `engine_cluster` varchar(128) not null default '' comment 'n9e-alert cluster',
     `clock` bigint not null,
-    PRIMARY KEY (`id`)
+    PRIMARY KEY (`id`),
+    INDEX `idx_inst` (`instance`),
+    INDEX `idx_clock` (`clock`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
 
 CREATE TABLE `datasource`
 (
     `id` int unsigned NOT NULL AUTO_INCREMENT,
     `name` varchar(191) not null default '',
+    `identifier` varchar(255) not null default '',
     `description` varchar(255) not null default '',
     `category` varchar(255) not null default '',
     `plugin_id` int unsigned not null default 0,
@@ -649,6 +656,7 @@ CREATE TABLE `datasource`
     `http` varchar(4096) not null default '',
     `auth` varchar(8192) not null default '',
     `is_default` boolean COMMENT 'is default datasource',
+    `weight` int not null default 0,
     `created_at` bigint not null default 0,
     `created_by` varchar(64) not null default '',
     `updated_at` bigint not null default 0,
@@ -670,7 +678,7 @@ CREATE TABLE `notify_tpl` (
     `name` varchar(255) not null,
     `content` text not null,
     `create_at` bigint DEFAULT 0 COMMENT 'create_at',
-    `create_by` varchar(64) DEFAULT '' COMMENT 'cerate_by',
+    `create_by` varchar(64) DEFAULT '' COMMENT 'create_by',
     `update_at` bigint DEFAULT 0 COMMENT 'update_at',
     `update_by` varchar(64) DEFAULT '' COMMENT 'update_by',
     PRIMARY KEY (`id`),
@@ -694,6 +702,7 @@ CREATE TABLE `es_index_pattern` (
     `allow_hide_system_indices` tinyint(1) not null default 0,
     `fields_format` varchar(4096) not null default '',
     `cross_cluster_enabled` int not null default 0,
+    `note` varchar(1024) not null default '',
     `create_at` bigint default '0',
     `create_by` varchar(64) default '',
     `update_at` bigint default '0',
@@ -701,6 +710,7 @@ CREATE TABLE `es_index_pattern` (
     PRIMARY KEY (`id`),
     UNIQUE KEY (`datasource_id`, `name`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
 
 CREATE TABLE `builtin_metrics` (
     `id` bigint unsigned NOT NULL AUTO_INCREMENT COMMENT 'unique identifier',
@@ -711,13 +721,16 @@ CREATE TABLE `builtin_metrics` (
     `lang` varchar(191) NOT NULL DEFAULT 'zh' COMMENT '''language''',
     `note` varchar(4096) NOT NULL COMMENT '''description of metric''',
     `expression` varchar(4096) NOT NULL COMMENT '''expression of metric''',
+    `expression_type` varchar(32) NOT NULL DEFAULT 'promql' COMMENT '''expression type: metric_name or promql''',
+    `metric_type` varchar(191) NOT NULL DEFAULT '' COMMENT '''metric type like counter/gauge''',
+    `extra_fields` text COMMENT '''custom extra fields''',
     `created_at` bigint NOT NULL DEFAULT 0 COMMENT '''create time''',
     `created_by` varchar(191) NOT NULL DEFAULT '' COMMENT '''creator''',
     `updated_at` bigint NOT NULL DEFAULT 0 COMMENT '''update time''',
     `updated_by` varchar(191) NOT NULL DEFAULT '' COMMENT '''updater''',
     `uuid` bigint NOT NULL DEFAULT 0 COMMENT '''uuid''',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `idx_collector_typ_name` (`lang`,`collector`, `typ`, `name`),
+    INDEX `idx_uuid` (`uuid`),
     INDEX `idx_collector` (`collector`),
     INDEX `idx_typ` (`typ`),
     INDEX `idx_builtinmetric_name` (`name` ASC),
@@ -762,6 +775,96 @@ CREATE TABLE `dash_annotation` (
     `update_by` varchar(64) not null default '' comment 'updater',
     PRIMARY KEY (`id`),
     KEY `idx_dashboard_id` (`dashboard_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE `user_token` (
+    `id` bigint NOT NULL AUTO_INCREMENT,
+    `username` varchar(255) NOT NULL DEFAULT '',
+    `token_name` varchar(255) NOT NULL DEFAULT '',
+    `token` varchar(255) NOT NULL DEFAULT '',
+    `create_at` bigint NOT NULL DEFAULT 0,
+    `last_used` bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+CREATE TABLE `notify_rule` (
+    `id` bigint unsigned not null auto_increment,
+    `name` varchar(255) not null,
+    `description` text,
+    `enable` tinyint(1) not null default 0,
+    `user_group_ids` varchar(255) not null default '',
+    `notify_configs` text,
+    `pipeline_configs` text,
+    `create_at` bigint not null default 0,
+    `create_by` varchar(64) not null default '',
+    `update_at` bigint not null default 0,
+    `update_by` varchar(64) not null default '',
+    PRIMARY KEY (`id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE `notify_channel` (
+    `id` bigint unsigned not null auto_increment,
+    `name` varchar(255) not null,
+    `ident` varchar(255) not null,
+    `description` text, 
+    `enable` tinyint(1) not null default 0,
+    `param_config` text,
+    `request_type` varchar(50) not null,
+    `request_config` text,
+    `weight` int not null default 0,
+    `create_at` bigint not null default 0,
+    `create_by` varchar(64) not null default '',
+    `update_at` bigint not null default 0,
+    `update_by` varchar(64) not null default '',
+    PRIMARY KEY (`id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE `message_template` (
+    `id` bigint unsigned not null auto_increment,
+    `name` varchar(64) not null,
+    `ident` varchar(64) not null,
+    `content` text,
+    `user_group_ids` varchar(64),
+    `notify_channel_ident` varchar(64) not null default '',
+    `private` int not null default 0,
+    `weight` int not null default 0,
+    `create_at` bigint not null default 0,
+    `create_by` varchar(64) not null default '',
+    `update_at` bigint not null default 0,
+    `update_by` varchar(64) not null default '',
+    PRIMARY KEY (`id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE `event_pipeline` (
+    `id` bigint unsigned not null auto_increment,
+    `name` varchar(128) not null,
+    `team_ids` text,
+    `description` varchar(255) not null default '',
+    `filter_enable` tinyint(1) not null default 0,
+    `label_filters` text,
+    `attr_filters` text,
+    `processor_configs` text,
+    `create_at` bigint not null default 0,
+    `create_by` varchar(64) not null default '',
+    `update_at` bigint not null default 0,
+    `update_by` varchar(64) not null default '',
+    PRIMARY KEY (`id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE `embedded_product` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `name` varchar(255) DEFAULT NULL,
+    `url` varchar(255) DEFAULT NULL,
+    `is_private` boolean DEFAULT NULL,
+    `hide` boolean not null default false,
+    `team_ids` varchar(255),
+    `create_at` bigint not null default 0,
+    `create_by` varchar(64) not null default '',
+    `update_at` bigint not null default 0,
+    `update_by` varchar(64) not null default '',
+    `weight` int not null default 0,
+    PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `task_meta`
@@ -2121,3 +2224,15 @@ CREATE TABLE task_host_99
     PRIMARY KEY (`ii`)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4;
+
+CREATE TABLE `source_token` (
+    `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+    `source_type` varchar(64) NOT NULL DEFAULT '' COMMENT 'source type',
+    `source_id` varchar(255) NOT NULL DEFAULT '' COMMENT 'source identifier',
+    `token` varchar(255) NOT NULL DEFAULT '' COMMENT 'access token',
+    `expire_at` bigint NOT NULL DEFAULT 0 COMMENT 'expire timestamp',
+    `create_at` bigint NOT NULL DEFAULT 0 COMMENT 'create timestamp',
+    `create_by` varchar(64) NOT NULL DEFAULT '' COMMENT 'creator',
+    PRIMARY KEY (`id`),
+    KEY `idx_source_type_id_token` (`source_type`, `source_id`, `token`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

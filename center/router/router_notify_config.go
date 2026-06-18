@@ -10,10 +10,10 @@ import (
 	"github.com/ccfos/nightingale/v6/memsto"
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/tplx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pelletier/go-toml/v2"
-	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/str"
 )
 
@@ -111,7 +111,7 @@ func (rt *Router) notifyChannelPuts(c *gin.Context) {
 }
 
 func (rt *Router) notifyContactGets(c *gin.Context) {
-	var notifyContacts []models.NotifyContact
+	notifyContacts := []models.NotifyContact{}
 	cval, err := models.ConfigsGet(rt.Ctx, models.NOTIFYCONTACT)
 	ginx.Dangerous(err)
 	if cval == "" {
@@ -120,26 +120,13 @@ func (rt *Router) notifyContactGets(c *gin.Context) {
 	}
 
 	err = json.Unmarshal([]byte(cval), &notifyContacts)
+
 	ginx.NewRender(c).Data(notifyContacts, err)
 }
 
 func (rt *Router) notifyContactPuts(c *gin.Context) {
 	var notifyContacts []models.NotifyContact
 	ginx.BindJSON(c, &notifyContacts)
-
-	keys := []string{models.DingtalkKey, models.WecomKey, models.FeishuKey, models.MmKey,
-		models.TelegramKey, models.LarkKey}
-
-	m := make(map[string]struct{})
-	for _, v := range notifyContacts {
-		m[v.Ident] = struct{}{}
-	}
-
-	for _, v := range keys {
-		if _, ok := m[v]; !ok {
-			ginx.Bomb(200, "contact %s ident can not modify", v)
-		}
-	}
 
 	data, err := json.Marshal(notifyContacts)
 	ginx.Dangerous(err)
@@ -175,7 +162,7 @@ func (rt *Router) notifyConfigPut(c *gin.Context) {
 		ginx.Bomb(200, "key %s can not modify", f.Ckey)
 	}
 	username := c.MustGet("username").(string)
-	//insert or update build-in config
+	//insert or update built-in config
 	ginx.Dangerous(models.ConfigsSetWithUname(rt.Ctx, f.Ckey, f.Cval, username))
 	if f.Ckey == models.SMTP {
 		// 重置邮件发送器
@@ -225,4 +212,15 @@ func (rt *Router) attemptSendEmail(c *gin.Context) {
 
 	ginx.NewRender(c).Message(sender.SendEmail("Email test", "email content", []string{f.Email}, smtp))
 
+}
+
+func (rt *Router) notifyChannelConfigGets(c *gin.Context) {
+
+	id := ginx.QueryInt64(c, "id", 0)
+	name := ginx.QueryStr(c, "name", "")
+	ident := ginx.QueryStr(c, "ident", "")
+	enabled := ginx.QueryInt(c, "enabled", -1)
+
+	notifyChannels, err := models.NotifyChannelGets(rt.Ctx, id, name, ident, enabled)
+	ginx.NewRender(c).Data(notifyChannels, err)
 }

@@ -6,9 +6,9 @@ import (
 
 	"github.com/ccfos/nightingale/v6/center/cconf"
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 )
 
 func (rt *Router) rolesGets(c *gin.Context) {
@@ -21,7 +21,9 @@ func (rt *Router) permsGets(c *gin.Context) {
 	if user.IsAdmin() {
 		var lst []string
 		for _, ops := range cconf.Operations.Ops {
-			lst = append(lst, ops.Ops...)
+			for _, op := range ops.Ops {
+				lst = append(lst, op.Name)
+			}
 		}
 		ginx.NewRender(c).Data(lst, nil)
 		return

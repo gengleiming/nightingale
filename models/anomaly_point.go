@@ -20,7 +20,15 @@ type AnomalyPoint struct {
 	Values        string                         `json:"values"`
 	ValuesUnit    map[string]unit.FormattedValue `json:"values_unit"`
 	RecoverConfig RecoverConfig                  `json:"recover_config"`
+	TriggerType   TriggerType                    `json:"trigger_type"`
 }
+
+type TriggerType string
+
+const (
+	TriggerTypeNormal TriggerType = "normal"
+	TriggerTypeNodata TriggerType = "nodata"
+)
 
 func NewAnomalyPoint(key string, labels map[string]string, ts int64, value float64, severity int) AnomalyPoint {
 	anomalyPointLabels := make(model.Metric)
@@ -38,6 +46,12 @@ func NewAnomalyPoint(key string, labels map[string]string, ts int64, value float
 }
 
 func (v *AnomalyPoint) ReadableValue() string {
+	if len(v.ValuesUnit) > 0 {
+		for _, unit := range v.ValuesUnit { // 配置了单位，优先用配置了单位的值
+			return unit.Text
+		}
+	}
+
 	ret := fmt.Sprintf("%.5f", v.Value)
 	ret = strings.TrimRight(ret, "0")
 	return strings.TrimRight(ret, ".")

@@ -2,13 +2,14 @@ package router
 
 import (
 	"net/http"
+	"sort"
 	"time"
 
+	"github.com/ccfos/nightingale/v6/center/integration"
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
-	"github.com/toolkits/pkg/i18n"
 )
 
 // single or import
@@ -29,9 +30,9 @@ func (rt *Router) builtinMetricsAdd(c *gin.Context) {
 	reterr := make(map[string]string)
 	for i := 0; i < count; i++ {
 		lst[i].Lang = lang
-		lst[i].UUID = time.Now().UnixNano()
+		lst[i].UUID = time.Now().UnixMicro()
 		if err := lst[i].Add(rt.Ctx, username); err != nil {
-			reterr[lst[i].Name] = i18n.Sprintf(c.GetHeader("X-Language"), err.Error())
+			reterr[lst[i].Name] = translateText(c.GetHeader("X-Language"), err.Error())
 		}
 	}
 	ginx.NewRender(c).Data(reterr, nil)
@@ -48,11 +49,12 @@ func (rt *Router) builtinMetricsGets(c *gin.Context) {
 		lang = "zh_CN"
 	}
 
-	bm, err := models.BuiltinMetricGets(rt.Ctx, lang, collector, typ, query, unit, limit, ginx.Offset(c, limit))
+	bmInDB, err := models.BuiltinMetricGets(rt.Ctx, "", collector, typ, query, unit)
 	ginx.Dangerous(err)
 
-	total, err := models.BuiltinMetricCount(rt.Ctx, lang, collector, typ, query, unit)
+	bm, total, err := integration.BuiltinPayloadInFile.BuiltinMetricGets(bmInDB, lang, collector, typ, query, unit, limit, ginx.Offset(c, limit))
 	ginx.Dangerous(err)
+
 	ginx.NewRender(c).Data(gin.H{
 		"list":  bm,
 		"total": total,
@@ -86,15 +88,11 @@ func (rt *Router) builtinMetricsDel(c *gin.Context) {
 func (rt *Router) builtinMetricsDefaultTypes(c *gin.Context) {
 	lst := []string{
 		"Linux",
+		"Procstat",
 		"cAdvisor",
 		"Ping",
 		"MySQL",
-		"Redis",
-		"Kafka",
-		"Elasticsearch",
-		"PostgreSQL",
-		"MongoDB",
-		"Memcached",
+		"ClickHouse",
 	}
 	ginx.NewRender(c).Data(lst, nil)
 }
@@ -102,29 +100,28 @@ func (rt *Router) builtinMetricsDefaultTypes(c *gin.Context) {
 func (rt *Router) builtinMetricsTypes(c *gin.Context) {
 	collector := ginx.QueryStr(c, "collector", "")
 	query := ginx.QueryStr(c, "query", "")
-	disabled := ginx.QueryInt(c, "disabled", -1)
 	lang := c.GetHeader("X-Language")
 
-	metricTypeList, err := models.BuiltinMetricTypes(rt.Ctx, lang, collector, query)
+	metricTypeListInDB, err := models.BuiltinMetricTypes(rt.Ctx, lang, collector, query)
 	ginx.Dangerous(err)
 
-	componentList, err := models.BuiltinComponentGets(rt.Ctx, "", disabled)
-	ginx.Dangerous(err)
+	metricTypeListInFile := integration.BuiltinPayloadInFile.BuiltinMetricTypes(lang, collector, query)
 
-	// 创建一个 map 来存储 componentList 中的类型
-	componentTypes := make(map[string]struct{})
-	for _, comp := range componentList {
-		componentTypes[comp.Ident] = struct{}{}
+	typeMap := make(map[string]struct{})
+	for _, metricType := range metricTypeListInDB {
+		typeMap[metricType] = struct{}{}
+	}
+	for _, metricType := range metricTypeListInFile {
+		typeMap[metricType] = struct{}{}
 	}
 
-	filteredMetricTypeList := make([]string, 0)
-	for _, metricType := range metricTypeList {
-		if _, exists := componentTypes[metricType]; exists {
-			filteredMetricTypeList = append(filteredMetricTypeList, metricType)
-		}
+	metricTypeList := make([]string, 0, len(typeMap))
+	for metricType := range typeMap {
+		metricTypeList = append(metricTypeList, metricType)
 	}
+	sort.Strings(metricTypeList)
 
-	ginx.NewRender(c).Data(filteredMetricTypeList, nil)
+	ginx.NewRender(c).Data(metricTypeList, nil)
 }
 
 func (rt *Router) builtinMetricsCollectors(c *gin.Context) {
@@ -132,5 +129,24 @@ func (rt *Router) builtinMetricsCollectors(c *gin.Context) {
 	query := ginx.QueryStr(c, "query", "")
 	lang := c.GetHeader("X-Language")
 
-	ginx.NewRender(c).Data(models.BuiltinMetricCollectors(rt.Ctx, lang, typ, query))
+	collectorListInDB, err := models.BuiltinMetricCollectors(rt.Ctx, lang, typ, query)
+	ginx.Dangerous(err)
+
+	collectorListInFile := integration.BuiltinPayloadInFile.BuiltinMetricCollectors(lang, typ, query)
+
+	collectorMap := make(map[string]struct{})
+	for _, collector := range collectorListInDB {
+		collectorMap[collector] = struct{}{}
+	}
+	for _, collector := range collectorListInFile {
+		collectorMap[collector] = struct{}{}
+	}
+
+	collectorList := make([]string, 0, len(collectorMap))
+	for collector := range collectorMap {
+		collectorList = append(collectorList, collector)
+	}
+	sort.Strings(collectorList)
+
+	ginx.NewRender(c).Data(collectorList, nil)
 }

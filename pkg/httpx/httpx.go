@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/ccfos/nightingale/v6/pkg/aop"
+	"github.com/ccfos/nightingale/v6/pkg/logx"
 	"github.com/ccfos/nightingale/v6/pkg/version"
 
 	"github.com/gin-contrib/pprof"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -37,6 +39,21 @@ type Config struct {
 	APIForAgent      BasicAuths
 	APIForService    BasicAuths
 	RSA              RSAConfig
+	TokenAuth        TokenAuth
+	A2A              A2AConfig
+}
+
+// A2AConfig controls the A2A (Agent-to-Agent) and MCP (Model Context Protocol)
+// HTTP endpoints exposed by n9e. Both are enabled by default; auth reuses the
+// existing TokenAuth middleware (X-User-Token).
+type A2AConfig struct {
+	// Disable turns off both the A2A and MCP endpoints when true.
+	Disable bool
+	// DisableMCP turns off only the MCP endpoint while keeping A2A active.
+	DisableMCP bool
+	// BaseURL is the absolute URL advertised in the AgentCard. When empty it
+	// is derived from the incoming request (Host + X-Forwarded-Proto / TLS).
+	BaseURL string
 }
 
 type RSAConfig struct {
@@ -68,6 +85,12 @@ type JWTAuth struct {
 	AccessExpired  int64
 	RefreshExpired int64
 	RedisKeyPrefix string
+	SingleLogin    bool
+}
+
+type TokenAuth struct {
+	Enable             bool
+	HeaderUserTokenKey string
 }
 
 func GinEngine(mode string, cfg Config, printBodyPaths func() map[string]struct{},
@@ -83,6 +106,8 @@ func GinEngine(mode string, cfg Config, printBodyPaths func() map[string]struct{
 	}
 
 	r := gin.New()
+
+	r.Use(traceIdMid())
 
 	r.Use(recoveryMid)
 
@@ -117,6 +142,32 @@ func GinEngine(mode string, cfg Config, printBodyPaths func() map[string]struct{
 	}
 
 	return r
+}
+
+func traceIdMid() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.GetHeader("X-Trace-Id")
+		if !isValidTraceId(id) {
+			id = uuid.New().String()
+		}
+		c.Set("trace_id", id)
+		ctx := logx.NewTraceContext(c.Request.Context(), id)
+		c.Request = c.Request.WithContext(ctx)
+		c.Header("X-Trace-Id", id)
+		c.Next()
+	}
+}
+
+func isValidTraceId(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func Init(cfg Config, handler http.Handler) func() {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ccfos/nightingale/v6/alert/sender/provider"
 	"github.com/ccfos/nightingale/v6/dscache"
 
 	"github.com/ccfos/nightingale/v6/alert/aconf"
@@ -64,6 +65,9 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	userGroupCache := memsto.NewUserGroupCache(ctx, syncStats)
 	taskTplsCache := memsto.NewTaskTplCache(ctx)
 	configCvalCache := memsto.NewCvalCache(ctx, syncStats)
+	notifyRuleCache := memsto.NewNotifyRuleCache(ctx, syncStats)
+	notifyChannelCache := memsto.NewNotifyChannelCache(ctx, syncStats)
+	messageTemplateCache := memsto.NewMessageTemplateCache(ctx, syncStats)
 
 	promClients := prom.NewPromClient(ctx)
 	dispatch.InitRegisterQueryFunc(promClients)
@@ -71,12 +75,12 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	externalProcessors := process.NewExternalProcessors()
 
 	macros.RegisterMacro(macros.MacroInVain)
-	dscache.Init(ctx, false)
-	Start(config.Alert, config.Pushgw, syncStats, alertStats, externalProcessors, targetCache, busiGroupCache, alertMuteCache, alertRuleCache, notifyConfigCache, taskTplsCache, dsCache, ctx, promClients, userCache, userGroupCache)
+	dscache.Init(ctx, false, config.Alert.Heartbeat.EngineName)
+	Start(config.Alert, config.Pushgw, syncStats, alertStats, externalProcessors, targetCache, busiGroupCache, alertMuteCache, alertRuleCache, notifyConfigCache, taskTplsCache, dsCache, ctx, promClients, userCache, userGroupCache, notifyRuleCache, notifyChannelCache, messageTemplateCache, configCvalCache)
 
 	r := httpx.GinEngine(config.Global.RunMode, config.HTTP,
 		configCvalCache.PrintBodyPaths, configCvalCache.PrintAccessLog)
-	rt := router.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors)
+	rt := router.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors, config.Log.Dir)
 
 	if config.Ibex.Enable {
 		ibex.ServerStart(false, nil, redis, config.HTTP.APIForService.BasicAuth, config.Alert.Heartbeat, &config.CenterApi, r, nil, config.Ibex, config.HTTP.Port)
@@ -95,14 +99,19 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 
 func Start(alertc aconf.Alert, pushgwc pconf.Pushgw, syncStats *memsto.Stats, alertStats *astats.Stats, externalProcessors *process.ExternalProcessorsType, targetCache *memsto.TargetCacheType, busiGroupCache *memsto.BusiGroupCacheType,
 	alertMuteCache *memsto.AlertMuteCacheType, alertRuleCache *memsto.AlertRuleCacheType, notifyConfigCache *memsto.NotifyConfigCacheType, taskTplsCache *memsto.TaskTplCache, datasourceCache *memsto.DatasourceCacheType, ctx *ctx.Context,
-	promClients *prom.PromClientMap, userCache *memsto.UserCacheType, userGroupCache *memsto.UserGroupCacheType) {
+	promClients *prom.PromClientMap, userCache *memsto.UserCacheType, userGroupCache *memsto.UserGroupCacheType, notifyRuleCache *memsto.NotifyRuleCacheType, notifyChannelCache *memsto.NotifyChannelCacheType, messageTemplateCache *memsto.MessageTemplateCacheType, configCvalCache *memsto.CvalCache) {
 	alertSubscribeCache := memsto.NewAlertSubscribeCache(ctx, syncStats)
 	recordingRuleCache := memsto.NewRecordingRuleCache(ctx, syncStats)
 	targetsOfAlertRulesCache := memsto.NewTargetOfAlertRuleCache(ctx, alertc.Heartbeat.EngineName, syncStats)
 
 	go models.InitNotifyConfig(ctx, alertc.Alerting.TemplatesDir)
+	go models.InitMessageTemplate(ctx)
+	go models.InitNotifyChannel(ctx)
+	models.VerifyByProvider = provider.VerifyChannelConfig
 
 	naming := naming.NewNaming(ctx, alertc.Heartbeat, alertStats)
+	// TODO(dingtalkapp): 钉钉应用本次不上线，先屏蔽 Stream 主备选举入口，避免启动回调长连接；待上线时恢复本行。
+	// notifyChannelCache.SetDingtalkLeaderNaming(naming)
 
 	writers := writer.NewWriters(pushgwc)
 	record.NewScheduler(alertc, recordingRuleCache, promClients, writers, alertStats, datasourceCache)
@@ -110,12 +119,20 @@ func Start(alertc aconf.Alert, pushgwc pconf.Pushgw, syncStats *memsto.Stats, al
 	eval.NewScheduler(alertc, externalProcessors, alertRuleCache, targetCache, targetsOfAlertRulesCache,
 		busiGroupCache, alertMuteCache, datasourceCache, promClients, naming, ctx, alertStats)
 
-	dp := dispatch.NewDispatch(alertRuleCache, userCache, userGroupCache, alertSubscribeCache, targetCache, notifyConfigCache, taskTplsCache, alertc.Alerting, ctx, alertStats)
-	consumer := dispatch.NewConsumer(alertc.Alerting, ctx, dp, promClients)
+	eventProcessorCache := memsto.NewEventProcessorCache(ctx, syncStats)
+
+	sender.InitStaticGlobalWebhook(alertc.Alerting.GlobalWebhook)
+
+	dp := dispatch.NewDispatch(alertRuleCache, userCache, userGroupCache, alertSubscribeCache, targetCache, notifyConfigCache, taskTplsCache, notifyRuleCache, notifyChannelCache, messageTemplateCache, eventProcessorCache, configCvalCache, alertc.Alerting, ctx, alertStats)
+	consumer := dispatch.NewConsumer(alertc.Alerting, ctx, dp, promClients, alertMuteCache)
+
+	notifyRecordConsumer := sender.NewNotifyRecordConsumer(ctx)
 
 	go dp.ReloadTpls()
 	go consumer.LoopConsume()
+	go notifyRecordConsumer.LoopConsume()
 
 	go queue.ReportQueueSize(alertStats)
+	go sender.ReportNotifyRecordQueueSize(alertStats)
 	go sender.InitEmailSender(ctx, notifyConfigCache)
 }

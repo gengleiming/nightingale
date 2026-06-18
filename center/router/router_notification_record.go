@@ -3,11 +3,12 @@ package router
 import (
 	"strings"
 
+	"github.com/ccfos/nightingale/v6/alert/sender"
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/logger"
 )
 
@@ -17,48 +18,39 @@ type NotificationResponse struct {
 }
 
 type SubRule struct {
-	SubID    int64               `json:"sub_id"`
-	Notifies map[string][]Record `json:"notifies"`
-}
-
-type Notify struct {
-	Channel string   `json:"channel"`
-	Records []Record `json:"records"`
+	SubID        int64               `json:"sub_id"`
+	NotifyRuleId int64               `json:"notify_rule_id"`
+	Notifies     map[string][]Record `json:"notifies"`
 }
 
 type Record struct {
-	Target   string `json:"target"`
-	Username string `json:"username"`
-	Status   int    `json:"status"`
-	Detail   string `json:"detail"`
+	NotifyRuleId int64  `json:"notify_rule_id"`
+	Target       string `json:"target"`
+	Username     string `json:"username"`
+	Status       int    `json:"status"`
+	Detail       string `json:"detail"`
 }
 
 // notificationRecordAdd
 func (rt *Router) notificationRecordAdd(c *gin.Context) {
-	var req []*models.NotificaitonRecord
+	var req []*models.NotificationRecord
 	ginx.BindJSON(c, &req)
-	err := models.DB(rt.Ctx).CreateInBatches(req, 100).Error
-	var ids []int64
-	if err == nil {
-		ids = make([]int64, len(req))
-		for i, noti := range req {
-			ids[i] = noti.Id
-		}
-	}
+	err := sender.PushNotifyRecords(req)
+	ginx.Dangerous(err, 429)
 
-	ginx.NewRender(c).Data(ids, err)
+	ginx.NewRender(c).Data(nil, err)
 }
 
 func (rt *Router) notificationRecordList(c *gin.Context) {
 	eid := ginx.UrlParamInt64(c, "eid")
-	lst, err := models.NotificaitonRecordsGetByEventId(rt.Ctx, eid)
+	lst, err := models.NotificationRecordsGetByEventId(rt.Ctx, eid)
 	ginx.Dangerous(err)
 
 	response := buildNotificationResponse(rt.Ctx, lst)
 	ginx.NewRender(c).Data(response, nil)
 }
 
-func buildNotificationResponse(ctx *ctx.Context, nl []*models.NotificaitonRecord) NotificationResponse {
+func buildNotificationResponse(ctx *ctx.Context, nl []*models.NotificationRecord) NotificationResponse {
 	response := NotificationResponse{
 		SubRules: []SubRule{},
 		Notifies: make(map[string][]Record),
@@ -118,9 +110,10 @@ func buildNotificationResponse(ctx *ctx.Context, nl []*models.NotificaitonRecord
 			n.Target = replaceLastEightChars(n.Target)
 		}
 		record := Record{
-			Target: n.Target,
-			Status: n.Status,
-			Detail: n.Details,
+			Target:       n.Target,
+			Status:       n.Status,
+			Detail:       n.Details,
+			NotifyRuleId: n.NotifyRuleID,
 		}
 
 		record.Username = strings.Join(usernames, ",")
@@ -130,7 +123,8 @@ func buildNotificationResponse(ctx *ctx.Context, nl []*models.NotificaitonRecord
 			subRule, ok := subRuleMap[n.SubId]
 			if !ok {
 				newSubRule := &SubRule{
-					SubID: n.SubId,
+					NotifyRuleId: n.NotifyRuleID,
+					SubID:        n.SubId,
 				}
 				newSubRule.Notifies = make(map[string][]Record)
 				newSubRule.Notifies[n.Channel] = []Record{record}
@@ -175,10 +169,11 @@ func checkChannel(channel string) bool {
 }
 
 func replaceLastEightChars(s string) string {
-	if len(s) <= 8 {
-		return strings.Repeat("*", len(s))
+	runes := []rune(s)
+	if len(runes) <= 8 {
+		return strings.Repeat("*", len(runes))
 	}
-	return s[:len(s)-8] + strings.Repeat("*", 8)
+	return string(runes[:len(runes)-8]) + strings.Repeat("*", 8)
 }
 
 func fillUserNames(ctx *ctx.Context, groupIdSet map[int64]struct{}) map[string]map[string]struct{} {

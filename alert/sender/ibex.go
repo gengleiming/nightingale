@@ -30,12 +30,14 @@ type IbexCallBacker struct {
 
 func (c *IbexCallBacker) CallBack(ctx CallBackContext) {
 	if len(ctx.CallBackURL) == 0 || len(ctx.Events) == 0 {
+		logger.Warningf("event_callback_ibex: url or events is empty, url: %s", ctx.CallBackURL)
 		return
 	}
 
 	event := ctx.Events[0]
 
 	if event.IsRecovered {
+		logger.Infof("event_callback_ibex: event is recovered, event: %s", event.Hash)
 		return
 	}
 
@@ -43,8 +45,9 @@ func (c *IbexCallBacker) CallBack(ctx CallBackContext) {
 }
 
 func (c *IbexCallBacker) handleIbex(ctx *ctx.Context, url string, event *models.AlertCurEvent) {
+	logger.Infof("event_callback_ibex: url: %s, event: %s", url, event.Hash)
 	if imodels.DB() == nil && ctx.IsCenter {
-		logger.Warning("event_callback_ibex: db is nil")
+		logger.Warningf("event_callback_ibex: db is nil, event: %s", event.Hash)
 		return
 	}
 
@@ -63,42 +66,53 @@ func (c *IbexCallBacker) handleIbex(ctx *ctx.Context, url string, event *models.
 
 	id, err := strconv.ParseInt(idstr, 10, 64)
 	if err != nil {
-		logger.Errorf("event_callback_ibex: failed to parse url: %s", url)
+		logger.Errorf("event_callback_ibex: failed to parse url: %s event: %s", url, event.Hash)
 		return
 	}
 
 	if host == "" {
 		// 用户在callback url中没有传入host，就从event中解析
 		host = event.TargetIdent
+
+		if host == "" {
+			if ident, has := event.TagsMap["ident"]; has {
+				host = ident
+			}
+		}
 	}
 
 	if host == "" {
-		logger.Error("event_callback_ibex: failed to get host")
+		logger.Errorf("event_callback_ibex: failed to get host, id: %d, event: %s", id, event.Hash)
 		return
 	}
 
-	CallIbex(ctx, id, host, c.taskTplCache, c.targetCache, c.userCache, event)
+	CallIbex(ctx, id, host, c.taskTplCache, c.targetCache, c.userCache, event, "")
 }
 
 func CallIbex(ctx *ctx.Context, id int64, host string,
 	taskTplCache *memsto.TaskTplCache, targetCache *memsto.TargetCacheType,
-	userCache *memsto.UserCacheType, event *models.AlertCurEvent) {
+	userCache *memsto.UserCacheType, event *models.AlertCurEvent, args string) (int64, error) {
+	logger.Infof("event_callback_ibex: id: %d, host: %s, args: %s, event: %s", id, host, args, event.Hash)
+
 	tpl := taskTplCache.Get(id)
 	if tpl == nil {
-		logger.Errorf("event_callback_ibex: no such tpl(%d)", id)
-		return
+		err := fmt.Errorf("event_callback_ibex: no such tpl(%d), event: %s", id, event.Hash)
+		logger.Errorf("%s", err)
+		return 0, err
 	}
 	// check perm
 	// tpl.GroupId - host - account 三元组校验权限
-	can, err := canDoIbex(tpl.UpdateBy, tpl, host, targetCache, userCache)
+	can, err := CanDoIbex(tpl.UpdateBy, tpl, host, targetCache, userCache)
 	if err != nil {
-		logger.Errorf("event_callback_ibex: check perm fail: %v", err)
-		return
+		err = fmt.Errorf("event_callback_ibex: check perm fail: %v, event: %s", err, event.Hash)
+		logger.Errorf("%s", err)
+		return 0, err
 	}
 
 	if !can {
-		logger.Errorf("event_callback_ibex: user(%s) no permission", tpl.UpdateBy)
-		return
+		err = fmt.Errorf("event_callback_ibex: user(%s) no permission, event: %s", tpl.UpdateBy, event.Hash)
+		logger.Errorf("%s", err)
+		return 0, err
 	}
 
 	tagsMap := make(map[string]string)
@@ -122,11 +136,16 @@ func CallIbex(ctx *ctx.Context, id int64, host string,
 
 	tags, err := json.Marshal(tagsMap)
 	if err != nil {
-		logger.Errorf("event_callback_ibex: failed to marshal tags to json: %v", tagsMap)
-		return
+		err = fmt.Errorf("event_callback_ibex: failed to marshal tags to json: %v, event: %s", tagsMap, event.Hash)
+		logger.Errorf("%s", err)
+		return 0, err
 	}
 
 	// call ibex
+	taskArgs := tpl.Args
+	if args != "" {
+		taskArgs = args
+	}
 	in := models.TaskForm{
 		Title:          tpl.Title + " FH: " + host,
 		Account:        tpl.Account,
@@ -135,18 +154,20 @@ func CallIbex(ctx *ctx.Context, id int64, host string,
 		Timeout:        tpl.Timeout,
 		Pause:          tpl.Pause,
 		Script:         tpl.Script,
-		Args:           tpl.Args,
+		Args:           taskArgs,
 		Stdin:          string(tags),
 		Action:         "start",
 		Creator:        tpl.UpdateBy,
+		AuthLevel:      tpl.AuthLevel,
 		Hosts:          []string{host},
 		AlertTriggered: true,
 	}
 
 	id, err = TaskAdd(in, tpl.UpdateBy, ctx.IsCenter)
 	if err != nil {
-		logger.Errorf("event_callback_ibex: call ibex fail: %v", err)
-		return
+		err = fmt.Errorf("event_callback_ibex: call ibex fail: %v, event: %s", err, event.Hash)
+		logger.Errorf("%s", err)
+		return 0, err
 	}
 
 	// write db
@@ -162,16 +183,20 @@ func CallIbex(ctx *ctx.Context, id int64, host string,
 		Pause:     in.Pause,
 		Script:    in.Script,
 		Args:      in.Args,
+		AuthLevel: in.AuthLevel,
 		CreateAt:  time.Now().Unix(),
 		CreateBy:  in.Creator,
 	}
 
 	if err = record.Add(ctx); err != nil {
-		logger.Errorf("event_callback_ibex: persist task_record fail: %v", err)
+		err = fmt.Errorf("event_callback_ibex: persist task_record fail: %v, event: %s", err, event.Hash)
+		logger.Errorf("%s", err)
+		return id, err
 	}
+	return id, nil
 }
 
-func canDoIbex(username string, tpl *models.TaskTpl, host string, targetCache *memsto.TargetCacheType, userCache *memsto.UserCacheType) (bool, error) {
+func CanDoIbex(username string, tpl *models.TaskTpl, host string, targetCache *memsto.TargetCacheType, userCache *memsto.UserCacheType) (bool, error) {
 	user := userCache.GetByUsername(username)
 	if user != nil && user.IsAdmin() {
 		return true, nil
@@ -187,7 +212,7 @@ func canDoIbex(username string, tpl *models.TaskTpl, host string, targetCache *m
 
 func TaskAdd(f models.TaskForm, authUser string, isCenter bool) (int64, error) {
 	if storage.Cache == nil {
-		logger.Warning("event_callback_ibex: redis cache is nil")
+		logger.Warningf("event_callback_ibex: redis cache is nil, task: %+v", f)
 		return 0, fmt.Errorf("redis cache is nil")
 	}
 
@@ -197,16 +222,17 @@ func TaskAdd(f models.TaskForm, authUser string, isCenter bool) (int64, error) {
 	}
 
 	taskMeta := &imodels.TaskMeta{
-		Title:     f.Title,
-		Account:   f.Account,
-		Batch:     f.Batch,
-		Tolerance: f.Tolerance,
-		Timeout:   f.Timeout,
-		Pause:     f.Pause,
-		Script:    f.Script,
-		Args:      f.Args,
-		Stdin:     f.Stdin,
-		Creator:   f.Creator,
+		Title:        f.Title,
+		Account:      f.Account,
+		Batch:        f.Batch,
+		Tolerance:    f.Tolerance,
+		Timeout:      f.Timeout,
+		Pause:        f.Pause,
+		Script:       f.Script,
+		Args:         f.Args,
+		Stdin:        f.Stdin,
+		Creator:      f.Creator,
+		SystemCaller: f.SystemCaller,
 	}
 
 	err := taskMeta.CleanFields()

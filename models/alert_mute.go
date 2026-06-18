@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,9 +19,90 @@ import (
 type TagFilter struct {
 	Key    string              `json:"key"`   // tag key
 	Func   string              `json:"func"`  // `==` | `=~` | `in` | `!=` | `!~` | `not in`
-	Value  string              `json:"value"` // tag value
+	Op     string              `json:"op"`    // `==` | `=~` | `in` | `!=` | `!~` | `not in`
+	Value  interface{}         `json:"value"` // tag value
 	Regexp *regexp.Regexp      // parse value to regexp if func = '=~' or '!~'
 	Vset   map[string]struct{} // parse value to regexp if func = 'in' or 'not in'
+}
+
+func (t *TagFilter) Verify() error {
+	if t.Key == "" {
+		return errors.New("tag key cannot be empty")
+	}
+
+	if t.Func == "" {
+		t.Func = t.Op
+	}
+
+	if t.Func != "==" && t.Func != "!=" && t.Func != "in" && t.Func != "not in" &&
+		t.Func != "=~" && t.Func != "!~" {
+		return errors.New("invalid operation")
+	}
+
+	return nil
+}
+
+func ParseTagFilter(bFilters []TagFilter) ([]TagFilter, error) {
+	var err error
+	for i := 0; i < len(bFilters); i++ {
+		if bFilters[i].Func == "=~" || bFilters[i].Func == "!~" {
+			// 这里存在两个情况，一个是 string 一个是 int
+			var pattern string
+			switch v := bFilters[i].Value.(type) {
+			case string:
+				pattern = v
+			case int:
+				pattern = strconv.Itoa(v)
+			default:
+				return nil, fmt.Errorf("unsupported value type for regex: %T", v)
+			}
+			bFilters[i].Regexp, err = regexp.Compile(pattern)
+			if err != nil {
+				return nil, err
+			}
+		} else if bFilters[i].Func == "in" || bFilters[i].Func == "not in" {
+			// 这里存在两个情况，一个是 string 一个是[]int
+			bFilters[i].Vset = make(map[string]struct{})
+
+			switch v := bFilters[i].Value.(type) {
+			case string:
+				// 处理字符串情况
+				arr := strings.Fields(v)
+				for j := 0; j < len(arr); j++ {
+					bFilters[i].Vset[arr[j]] = struct{}{}
+				}
+			case []int:
+				// 处理[]int情况
+				for j := 0; j < len(v); j++ {
+					bFilters[i].Vset[strconv.Itoa(v[j])] = struct{}{}
+				}
+			case []string:
+				for j := 0; j < len(v); j++ {
+					bFilters[i].Vset[v[j]] = struct{}{}
+				}
+			case []interface{}:
+				// 处理[]interface{}情况（JSON解析可能产生）
+				for j := 0; j < len(v); j++ {
+					switch item := v[j].(type) {
+					case string:
+						bFilters[i].Vset[item] = struct{}{}
+					case int:
+						bFilters[i].Vset[strconv.Itoa(item)] = struct{}{}
+					case float64:
+						bFilters[i].Vset[strconv.Itoa(int(item))] = struct{}{}
+					}
+				}
+			default:
+				// 兜底处理，转为字符串
+				str := fmt.Sprintf("%v", v)
+				arr := strings.Fields(str)
+				for j := 0; j < len(arr); j++ {
+					bFilters[i].Vset[arr[j]] = struct{}{}
+				}
+			}
+		}
+	}
+	return bFilters, nil
 }
 
 func GetTagFilters(jsonArr ormx.JSONArr) ([]TagFilter, error) {
@@ -35,15 +117,54 @@ func GetTagFilters(jsonArr ormx.JSONArr) ([]TagFilter, error) {
 	}
 	for i := 0; i < len(bFilters); i++ {
 		if bFilters[i].Func == "=~" || bFilters[i].Func == "!~" {
-			bFilters[i].Regexp, err = regexp.Compile(bFilters[i].Value)
+			var pattern string
+			switch v := bFilters[i].Value.(type) {
+			case string:
+				pattern = v
+			case int:
+				pattern = strconv.Itoa(v)
+			default:
+				return nil, fmt.Errorf("unsupported value type for regex: %T", v)
+			}
+			bFilters[i].Regexp, err = regexp.Compile(pattern)
 			if err != nil {
 				return nil, err
 			}
 		} else if bFilters[i].Func == "in" || bFilters[i].Func == "not in" {
-			arr := strings.Fields(bFilters[i].Value)
 			bFilters[i].Vset = make(map[string]struct{})
-			for j := 0; j < len(arr); j++ {
-				bFilters[i].Vset[arr[j]] = struct{}{}
+
+			// 在GetTagFilters中，Value通常是string类型，但也要处理其他可能的类型
+			switch v := bFilters[i].Value.(type) {
+			case string:
+				// 处理字符串情况
+				arr := strings.Fields(v)
+				for j := 0; j < len(arr); j++ {
+					bFilters[i].Vset[arr[j]] = struct{}{}
+				}
+			case []int:
+				// 处理[]int情况
+				for j := 0; j < len(v); j++ {
+					bFilters[i].Vset[strconv.Itoa(v[j])] = struct{}{}
+				}
+			case []interface{}:
+				// 处理[]interface{}情况（JSON解析可能产生）
+				for j := 0; j < len(v); j++ {
+					switch item := v[j].(type) {
+					case string:
+						bFilters[i].Vset[item] = struct{}{}
+					case int:
+						bFilters[i].Vset[strconv.Itoa(item)] = struct{}{}
+					case float64:
+						bFilters[i].Vset[strconv.Itoa(int(item))] = struct{}{}
+					}
+				}
+			default:
+				// 兜底处理，转为字符串
+				str := fmt.Sprintf("%v", v)
+				arr := strings.Fields(str)
+				for j := 0; j < len(arr); j++ {
+					bFilters[i].Vset[arr[j]] = struct{}{}
+				}
 			}
 		}
 	}
@@ -62,14 +183,16 @@ type AlertMute struct {
 	Prod              string         `json:"prod"`
 	DatasourceIds     string         `json:"-" gorm:"datasource_ids"` // datasource ids
 	DatasourceIdsJson []int64        `json:"datasource_ids" gorm:"-"` // for fe
-	Cluster           string         `json:"cluster"`                 // take effect by clusters, seperated by space
+	Cluster           string         `json:"cluster"`                 // take effect by clusters, separated by space
 	Tags              ormx.JSONArr   `json:"tags"`
 	Cause             string         `json:"cause"`
 	Btime             int64          `json:"btime"`
 	Etime             int64          `json:"etime"`
-	Disabled          int            `json:"disabled"` // 0: enabled, 1: disabled
+	Disabled          int            `json:"disabled"`           // 0: enabled, 1: disabled
+	Activated         int            `json:"activated" gorm:"-"` // 0: not activated, 1: activated
 	CreateBy          string         `json:"create_by"`
 	UpdateBy          string         `json:"update_by"`
+	UpdateByNickname  string         `json:"update_by_nickname" gorm:"-"`
 	CreateAt          int64          `json:"create_at"`
 	UpdateAt          int64          `json:"update_at"`
 	ITags             []TagFilter    `json:"-" gorm:"-"`     // inner tags
@@ -108,7 +231,7 @@ func AlertMuteGet(ctx *ctx.Context, where string, args ...interface{}) (*AlertMu
 	return lst[0], err
 }
 
-func AlertMuteGets(ctx *ctx.Context, prods []string, bgid int64, disabled int, query string) (lst []AlertMute, err error) {
+func AlertMuteGets(ctx *ctx.Context, prods []string, bgid int64, disabled int, expired int, query string) (lst []AlertMute, err error) {
 	session := DB(ctx)
 
 	if bgid != -1 {
@@ -124,6 +247,15 @@ func AlertMuteGets(ctx *ctx.Context, prods []string, bgid int64, disabled int, q
 			session = session.Where("disabled = 0")
 		} else {
 			session = session.Where("disabled = 1")
+		}
+	}
+
+	if expired != -1 {
+		now := time.Now().Unix()
+		if expired == 1 {
+			session = session.Where("mute_time_type = ? AND etime < ?", TimeRange, now)
+		} else {
+			session = session.Where("(mute_time_type = ? AND etime >= ?) OR mute_time_type = ?", TimeRange, now, Periodic)
 		}
 	}
 
@@ -242,11 +374,11 @@ func (m *AlertMute) FE2DB() error {
 	m.PeriodicMutes = string(periodicMutesBytes)
 
 	if len(m.SeveritiesJson) > 0 {
-		severtiesBytes, err := json.Marshal(m.SeveritiesJson)
+		severitiesBytes, err := json.Marshal(m.SeveritiesJson)
 		if err != nil {
 			return err
 		}
-		m.Severities = string(severtiesBytes)
+		m.Severities = string(severitiesBytes)
 	}
 
 	return nil
@@ -274,6 +406,22 @@ func (m *AlertMute) DB2FE() error {
 		}
 	}
 
+	// 检查时间范围
+	isWithinTime := false
+	if m.MuteTimeType == TimeRange {
+		isWithinTime = m.IsWithinTimeRange(time.Now().Unix())
+	} else if m.MuteTimeType == Periodic {
+		isWithinTime = m.IsWithinPeriodicMute(time.Now().Unix())
+	} else {
+		logger.Warningf("mute time type invalid, %d", m.MuteTimeType)
+	}
+
+	if isWithinTime {
+		m.Activated = 1
+	} else {
+		m.Activated = 0
+	}
+
 	return err
 }
 
@@ -281,11 +429,55 @@ func (m *AlertMute) UpdateFieldsMap(ctx *ctx.Context, fields map[string]interfac
 	return DB(ctx).Model(m).Updates(fields).Error
 }
 
+func (m *AlertMute) IsWithinTimeRange(checkTime int64) bool {
+	if checkTime < m.Btime || checkTime > m.Etime {
+		return false
+	}
+	return true
+}
+
+func (m *AlertMute) IsWithinPeriodicMute(checkTime int64) bool {
+	tm := time.Unix(checkTime, 0)
+	triggerTime := tm.Format("15:04")
+	triggerWeek := strconv.Itoa(int(tm.Weekday()))
+
+	for i := 0; i < len(m.PeriodicMutesJson); i++ {
+		if strings.Contains(m.PeriodicMutesJson[i].EnableDaysOfWeek, triggerWeek) {
+			if m.PeriodicMutesJson[i].EnableStime == m.PeriodicMutesJson[i].EnableEtime || (m.PeriodicMutesJson[i].EnableStime == "00:00" && m.PeriodicMutesJson[i].EnableEtime == "23:59") {
+				return true
+			} else if m.PeriodicMutesJson[i].EnableStime < m.PeriodicMutesJson[i].EnableEtime {
+				if triggerTime >= m.PeriodicMutesJson[i].EnableStime && triggerTime < m.PeriodicMutesJson[i].EnableEtime {
+					return true
+				}
+			} else {
+				if triggerTime >= m.PeriodicMutesJson[i].EnableStime || triggerTime < m.PeriodicMutesJson[i].EnableEtime {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 func AlertMuteDel(ctx *ctx.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	return DB(ctx).Where("id in ?", ids).Delete(new(AlertMute)).Error
+}
+
+// AlertMuteBatchDelete deletes time-range alert mutes that expired before the
+// given timestamp (etime > 0 AND etime < timestamp) and were created before
+// the timestamp. Periodic mutes are skipped. Optionally restrict to the
+// provided group IDs. Returns the number of rows deleted in this batch.
+func AlertMuteBatchDelete(ctx *ctx.Context, timestamp int64, groupIds []int64, limit int) (int64, error) {
+	db := DB(ctx).Where("mute_time_type = ? AND etime > 0 AND etime < ? AND create_at < ?", TimeRange, timestamp, timestamp)
+	if len(groupIds) > 0 {
+		db = db.Where("group_id IN (?)", groupIds)
+	}
+	res := db.Limit(limit).Delete(&AlertMute{})
+	return res.RowsAffected, res.Error
 }
 
 func AlertMuteStatistics(ctx *ctx.Context) (*Statistics, error) {
@@ -309,7 +501,7 @@ func AlertMuteGetsAll(ctx *ctx.Context) ([]*AlertMute, error) {
 	// get my cluster's mutes
 	var lst []*AlertMute
 	if !ctx.IsCenter {
-		lst, err := poster.GetByUrls[[]*AlertMute](ctx, "/v1/n9e/alert-mutes?disabled=0")
+		lst, err := poster.GetByUrls[[]*AlertMute](ctx, "/v1/n9e/active-alert-mutes")
 		if err != nil {
 			return nil, err
 		}
@@ -320,6 +512,10 @@ func AlertMuteGetsAll(ctx *ctx.Context) ([]*AlertMute, error) {
 	}
 
 	session := DB(ctx).Model(&AlertMute{}).Where("disabled = 0")
+
+	// 只筛选在生效时间内的屏蔽规则, 这里 btime < now+10 是为了避免同步期间有规则满足了生效时间条件
+	now := time.Now().Unix()
+	session = session.Where("(mute_time_type = ? AND btime <= ? AND etime >= ?) OR mute_time_type = ?", TimeRange, now+10, now, Periodic)
 
 	err := session.Find(&lst).Error
 	if err != nil {

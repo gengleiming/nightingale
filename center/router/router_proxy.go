@@ -2,21 +2,25 @@ package router
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ccfos/nightingale/v6/pkg/logx"
+	"github.com/ccfos/nightingale/v6/pkg/poster"
 	pkgprom "github.com/ccfos/nightingale/v6/pkg/prom"
 	"github.com/ccfos/nightingale/v6/prom"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/common/model"
-	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/logger"
+	"github.com/toolkits/pkg/net/httplib"
 )
 
 type QueryFormItem struct {
@@ -35,15 +39,16 @@ func (rt *Router) promBatchQueryRange(c *gin.Context) {
 	var f BatchQueryForm
 	ginx.Dangerous(c.BindJSON(&f))
 
-	lst, err := PromBatchQueryRange(rt.PromClients, f)
+	lst, err := PromBatchQueryRange(c.Request.Context(), rt.PromClients, f)
 	ginx.NewRender(c).Data(lst, err)
 }
 
-func PromBatchQueryRange(pc *prom.PromClientMap, f BatchQueryForm) ([]model.Value, error) {
+func PromBatchQueryRange(ctx context.Context, pc *prom.PromClientMap, f BatchQueryForm) ([]model.Value, error) {
 	var lst []model.Value
 
 	cli := pc.GetCli(f.DatasourceId)
 	if cli == nil {
+		logx.Warningf(ctx, "no such datasource id: %d", f.DatasourceId)
 		return lst, fmt.Errorf("no such datasource id: %d", f.DatasourceId)
 	}
 
@@ -54,8 +59,9 @@ func PromBatchQueryRange(pc *prom.PromClientMap, f BatchQueryForm) ([]model.Valu
 			Step:  time.Duration(item.Step) * time.Second,
 		}
 
-		resp, _, err := cli.QueryRange(context.Background(), item.Query, r)
+		resp, _, err := cli.QueryRange(ctx, item.Query, r)
 		if err != nil {
+			logx.Warningf(ctx, "query range error: query:%s err:%v", item.Query, err)
 			return lst, err
 		}
 
@@ -78,22 +84,23 @@ func (rt *Router) promBatchQueryInstant(c *gin.Context) {
 	var f BatchInstantForm
 	ginx.Dangerous(c.BindJSON(&f))
 
-	lst, err := PromBatchQueryInstant(rt.PromClients, f)
+	lst, err := PromBatchQueryInstant(c.Request.Context(), rt.PromClients, f)
 	ginx.NewRender(c).Data(lst, err)
 }
 
-func PromBatchQueryInstant(pc *prom.PromClientMap, f BatchInstantForm) ([]model.Value, error) {
+func PromBatchQueryInstant(ctx context.Context, pc *prom.PromClientMap, f BatchInstantForm) ([]model.Value, error) {
 	var lst []model.Value
 
 	cli := pc.GetCli(f.DatasourceId)
 	if cli == nil {
-		logger.Warningf("no such datasource id: %d", f.DatasourceId)
+		logx.Warningf(ctx, "no such datasource id: %d", f.DatasourceId)
 		return lst, fmt.Errorf("no such datasource id: %d", f.DatasourceId)
 	}
 
 	for _, item := range f.Queries {
-		resp, _, err := cli.Query(context.Background(), item.Query, time.Unix(item.Time, 0))
+		resp, _, err := cli.Query(ctx, item.Query, time.Unix(item.Time, 0))
 		if err != nil {
+			logx.Warningf(ctx, "query instant error: query:%s err:%v", item.Query, err)
 			return lst, err
 		}
 
@@ -144,6 +151,8 @@ func (rt *Router) dsProxy(c *gin.Context) {
 
 		if ds.AuthJson.BasicAuthUser != "" {
 			req.SetBasicAuth(ds.AuthJson.BasicAuthUser, ds.AuthJson.BasicAuthPassword)
+		} else {
+			req.Header.Del("Authorization")
 		}
 
 		headerCount := len(ds.HTTPJson.Headers)
@@ -163,8 +172,15 @@ func (rt *Router) dsProxy(c *gin.Context) {
 
 	transport, has := transportGet(dsId, ds.UpdatedAt)
 	if !has {
+		// 使用 TLS 配置（支持 mTLS）
+		tlsConfig, err := ds.HTTPJson.TLS.TLSConfig()
+		if err != nil {
+			c.String(http.StatusInternalServerError, "failed to create TLS config: %s", err.Error())
+			return
+		}
+
 		transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: ds.HTTPJson.TLS.SkipTlsVerify},
+			TLSClientConfig: tlsConfig,
 			Proxy:           http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
 				Timeout: time.Duration(ds.HTTPJson.DialTimeout) * time.Millisecond,
@@ -177,7 +193,7 @@ func (rt *Router) dsProxy(c *gin.Context) {
 
 	modifyResponse := func(r *http.Response) error {
 		if r.StatusCode == http.StatusUnauthorized {
-			logger.Warningf("proxy path:%s unauthorized access ", c.Request.URL.Path)
+			logx.Warningf(c.Request.Context(), "proxy path:%s unauthorized access ", c.Request.URL.Path)
 			return fmt.Errorf("unauthorized access")
 		}
 
@@ -234,4 +250,95 @@ func transportPut(dsid, updatedat int64, tran http.RoundTripper) {
 	transports[dsid] = tran
 	updatedAts[dsid] = updatedat
 	transportsLock.Unlock()
+}
+
+const (
+	DatasourceTypePrometheus      = "Prometheus"
+	DatasourceTypeVictoriaMetrics = "VictoriaMetrics"
+)
+
+type deleteDatasourceSeriesForm struct {
+	DatasourceID int64    `json:"datasource_id"`
+	Match        []string `json:"match"`
+	Start        string   `json:"start"`
+	End          string   `json:"end"`
+}
+
+func (rt *Router) deleteDatasourceSeries(c *gin.Context) {
+	var ddsf deleteDatasourceSeriesForm
+	ginx.BindJSON(c, &ddsf)
+	ds := rt.DatasourceCache.GetById(ddsf.DatasourceID)
+
+	if ds == nil {
+		ginx.Bomb(http.StatusBadRequest, "no such datasource")
+		return
+	}
+
+	// Get datasource type, now only support prometheus and victoriametrics
+	datasourceType, ok := ds.SettingsJson["prometheus.tsdb_type"]
+	if !ok {
+		ginx.Bomb(http.StatusBadRequest, "datasource type not found, please check your datasource settings")
+		return
+	}
+
+	target, err := ds.HTTPJson.ParseUrl()
+	if err != nil {
+		ginx.Bomb(http.StatusInternalServerError, "invalid urls: %s", ds.HTTPJson.GetUrls())
+		return
+	}
+
+	timeout := time.Duration(ds.HTTPJson.DialTimeout) * time.Millisecond
+	matchQueries := make([]string, 0)
+	for _, match := range ddsf.Match {
+		matchQueries = append(matchQueries, fmt.Sprintf("match[]=%s", match))
+	}
+	matchQuery := strings.Join(matchQueries, "&")
+
+	switch datasourceType {
+	case DatasourceTypePrometheus:
+		// Prometheus delete api need POST method
+		// https://prometheus.io/docs/prometheus/latest/querying/api/#delete-series
+		url := fmt.Sprintf("http://%s/api/v1/admin/tsdb/delete_series?%s&start=%s&end=%s", target.Host, matchQuery, ddsf.Start, ddsf.End)
+		go func() {
+			resp, _, err := poster.PostJSON(url, timeout, nil)
+			if err != nil {
+				logger.Errorf("delete series error datasource_id: %d, datasource_name: %s, match: %s, start: %s, end: %s, err: %v",
+					ddsf.DatasourceID, ds.Name, ddsf.Match, ddsf.Start, ddsf.End, err)
+				return
+			}
+			logger.Infof("delete datasource series datasource_id: %d, datasource_name: %s, match: %s, start: %s, end: %s, respBody: %s",
+				ddsf.DatasourceID, ds.Name, ddsf.Match, ddsf.Start, ddsf.End, string(resp))
+		}()
+	case DatasourceTypeVictoriaMetrics:
+		// Delete API doesn’t support the deletion of specific time ranges.
+		// Refer: https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/#how-to-delete-time-series
+		var url string
+		// Check VictoriaMetrics is single node or cluster
+		// Cluster will have /select/<accountID>/prometheus pattern
+		re := regexp.MustCompile(`/select/(\d+)/prometheus`)
+		matches := re.FindStringSubmatch(ds.HTTPJson.Url)
+		if len(matches) > 0 && matches[1] != "" {
+			accountID, err := strconv.Atoi(matches[1])
+			if err != nil {
+				ginx.Bomb(http.StatusInternalServerError, "invalid accountID: %s", matches[1])
+			}
+			url = fmt.Sprintf("http://%s/delete/%d/prometheus/api/v1/admin/tsdb/delete_series?%s", target.Host, accountID, matchQuery)
+		} else {
+			url = fmt.Sprintf("http://%s/api/v1/admin/tsdb/delete_series?%s", target.Host, matchQuery)
+		}
+		go func() {
+			resp, err := httplib.Get(url).SetTimeout(timeout).Response()
+			if err != nil {
+				logger.Errorf("delete series failed | datasource_id: %d, datasource_name: %s, match: %s, start: %s, end: %s, err: %v",
+					ddsf.DatasourceID, ds.Name, ddsf.Match, ddsf.Start, ddsf.End, err)
+				return
+			}
+			logger.Infof("sending delete series request | datasource_id: %d, datasource_name: %s, match: %s, start: %s, end: %s, respBody: %s",
+				ddsf.DatasourceID, ds.Name, ddsf.Match, ddsf.Start, ddsf.End, resp.Body)
+		}()
+	default:
+		ginx.Bomb(http.StatusBadRequest, "not support delete series yet")
+	}
+
+	ginx.NewRender(c).Data(nil, nil)
 }

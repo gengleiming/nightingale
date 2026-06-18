@@ -1,6 +1,7 @@
 package sender
 
 import (
+	"fmt"
 	"html/template"
 	"net/url"
 	"strings"
@@ -135,14 +136,14 @@ func (c *DefaultCallBacker) CallBack(ctx CallBackContext) {
 func doSendAndRecord(ctx *ctx.Context, url, token string, body interface{}, channel string,
 	stats *astats.Stats, events []*models.AlertCurEvent) {
 	res, err := doSend(url, body, channel, stats)
-	NotifyRecord(ctx, events, channel, token, res, err)
+	NotifyRecord(ctx, events, 0, channel, token, res, err)
 }
 
-func NotifyRecord(ctx *ctx.Context, evts []*models.AlertCurEvent, channel, target, res string, err error) {
+func NotifyRecord(ctx *ctx.Context, evts []*models.AlertCurEvent, notifyRuleID int64, channel, target, res string, err error) {
 	// 一个通知可能对应多个 event，都需要记录
-	notis := make([]*models.NotificaitonRecord, 0, len(evts))
+	notis := make([]*models.NotificationRecord, 0, len(evts))
 	for _, evt := range evts {
-		noti := models.NewNotificationRecord(evt, channel, target)
+		noti := models.NewNotificationRecord(evt, notifyRuleID, channel, target)
 		if err != nil {
 			noti.SetStatus(models.NotiStatusFailure)
 			noti.SetDetails(err.Error())
@@ -153,26 +154,26 @@ func NotifyRecord(ctx *ctx.Context, evts []*models.AlertCurEvent, channel, targe
 	}
 
 	if !ctx.IsCenter {
-		_, err := poster.PostByUrlsWithResp[[]int64](ctx, "/v1/n9e/notify-record", notis)
+		err := poster.PostByUrls(ctx, "/v1/n9e/notify-record", notis)
 		if err != nil {
 			logger.Errorf("add notis:%v failed, err: %v", notis, err)
 		}
 		return
 	}
 
-	if err := models.DB(ctx).CreateInBatches(notis, 100).Error; err != nil {
-		logger.Errorf("add notis:%v failed, err: %v", notis, err)
-	}
+	PushNotifyRecords(notis)
 }
 
 func doSend(url string, body interface{}, channel string, stats *astats.Stats) (string, error) {
 	stats.AlertNotifyTotal.WithLabelValues(channel).Inc()
 
+	start := time.Now()
 	res, code, err := poster.PostJSON(url, time.Second*5, body, 3)
+	res = []byte(fmt.Sprintf("duration: %d ms status_code:%d, response:%s", time.Since(start).Milliseconds(), code, string(res)))
 	if err != nil {
 		logger.Errorf("%s_sender: result=fail url=%s code=%d error=%v req:%v response=%s", channel, url, code, err, body, string(res))
 		stats.AlertNotifyErrorTotal.WithLabelValues(channel).Inc()
-		return "", err
+		return string(res), err
 	}
 
 	logger.Infof("%s_sender: result=succ url=%s code=%d req:%v response=%s", channel, url, code, body, string(res))
@@ -204,6 +205,6 @@ func PushCallbackEvent(ctx *ctx.Context, webhook *models.Webhook, event *models.
 
 	succ := queue.eventQueue.Push(event)
 	if !succ {
-		logger.Warningf("Write channel(%s) full, current channel size: %d event:%v", webhook.Url, queue.eventQueue.Len(), event)
+		logger.Warningf("Write channel(%s) full, current channel size: %d event:%s", webhook.Url, queue.eventQueue.Len(), event.Hash)
 	}
 }

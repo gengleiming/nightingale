@@ -10,6 +10,7 @@ import (
 	"github.com/ccfos/nightingale/v6/alert/astats"
 	"github.com/ccfos/nightingale/v6/alert/naming"
 	"github.com/ccfos/nightingale/v6/alert/process"
+	"github.com/ccfos/nightingale/v6/datasource/commons/eslike"
 	"github.com/ccfos/nightingale/v6/memsto"
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
 	"github.com/ccfos/nightingale/v6/prom"
@@ -62,6 +63,7 @@ func NewScheduler(aconf aconf.Alert, externalProcessors *process.ExternalProcess
 		ctx:   ctx,
 		stats: stats,
 	}
+	eslike.SetEsIndexPatternCacheType(memsto.NewEsIndexPatternCacheType(ctx))
 
 	go scheduler.LoopSyncRules(context.Background())
 	return scheduler
@@ -91,7 +93,7 @@ func (s *Scheduler) syncAlertRules() {
 		}
 
 		ruleType := rule.GetRuleType()
-		if rule.IsPrometheusRule() || rule.IsLokiRule() || rule.IsTdengineRule() || rule.IsClickHouseRule() || rule.IsElasticSearch() {
+		if rule.IsPrometheusRule() || rule.IsInnerRule() {
 			datasourceIds := s.datasourceCache.GetIDsByDsCateAndQueries(rule.Cate, rule.DatasourceQueries)
 			for _, dsId := range datasourceIds {
 				if !naming.DatasourceHashRing.IsHit(strconv.FormatInt(dsId, 10), fmt.Sprintf("%d", rule.Id), s.aconf.Heartbeat.Endpoint) {
@@ -99,17 +101,17 @@ func (s *Scheduler) syncAlertRules() {
 				}
 				ds := s.datasourceCache.GetById(dsId)
 				if ds == nil {
-					logger.Debugf("datasource %d not found", dsId)
+					logger.Debugf("alert_eval_%d datasource %d not found", rule.Id, dsId)
 					continue
 				}
 
 				if ds.PluginType != ruleType {
-					logger.Debugf("datasource %d category is %s not %s", dsId, ds.PluginType, ruleType)
+					logger.Debugf("alert_eval_%d datasource %d category is %s not %s", rule.Id, dsId, ds.PluginType, ruleType)
 					continue
 				}
 
 				if ds.Status != "enabled" {
-					logger.Debugf("datasource %d status is %s", dsId, ds.Status)
+					logger.Debugf("alert_eval_%d datasource %d status is %s", rule.Id, dsId, ds.Status)
 					continue
 				}
 				processor := process.NewProcessor(s.aconf.Heartbeat.EngineName, rule, dsId, s.alertRuleCache, s.targetCache, s.targetsOfAlertRuleCache, s.busiGroupCache, s.alertMuteCache, s.datasourceCache, s.ctx, s.stats)
@@ -132,12 +134,12 @@ func (s *Scheduler) syncAlertRules() {
 			for _, dsId := range dsIds {
 				ds := s.datasourceCache.GetById(dsId)
 				if ds == nil {
-					logger.Debugf("datasource %d not found", dsId)
+					logger.Debugf("alert_eval_%d datasource %d not found", rule.Id, dsId)
 					continue
 				}
 
 				if ds.Status != "enabled" {
-					logger.Debugf("datasource %d status is %s", dsId, ds.Status)
+					logger.Debugf("alert_eval_%d datasource %d status is %s", rule.Id, dsId, ds.Status)
 					continue
 				}
 				processor := process.NewProcessor(s.aconf.Heartbeat.EngineName, rule, dsId, s.alertRuleCache, s.targetCache, s.targetsOfAlertRuleCache, s.busiGroupCache, s.alertMuteCache, s.datasourceCache, s.ctx, s.stats)

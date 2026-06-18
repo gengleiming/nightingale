@@ -21,12 +21,14 @@ func MigrateIbexTables(db *gorm.DB) {
 	var tableOptions string
 	switch db.Dialector.(type) {
 	case *mysql.Dialector:
-		tableOptions = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+		tableOptions = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
 	}
 
 	if tableOptions != "" {
 		db = db.Set("gorm:table_options", tableOptions)
 	}
+
+	fixTaskHostDoingPrimaryKey(db)
 
 	dts := []interface{}{&imodels.TaskMeta{}, &imodels.TaskScheduler{}, &TaskHostDoing{}, &imodels.TaskAction{}}
 	for _, dt := range dts {
@@ -50,6 +52,53 @@ func MigrateIbexTables(db *gorm.DB) {
 	}
 }
 
+// fixTaskHostDoingPrimaryKey repairs MySQL tables created by older releases that
+// declared id as the sole auto-increment primary key: inserting a second host for
+// the same task violated the primary key. AutoMigrate never alters an existing
+// table's primary key, so drop it manually. The table is deliberately left
+// without a primary key, same as tables created from the SQL init files.
+func fixTaskHostDoingPrimaryKey(db *gorm.DB) {
+	if _, ok := db.Dialector.(*mysql.Dialector); !ok {
+		return
+	}
+
+	if !db.Migrator().HasTable("task_host_doing") {
+		return
+	}
+
+	var pkCols []string
+	err := db.Raw(`SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_host_doing'
+		AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION`).Scan(&pkCols).Error
+	if err != nil {
+		logger.Errorf("failed to check task_host_doing primary key: %v", err)
+		return
+	}
+
+	if len(pkCols) != 1 || pkCols[0] != "id" {
+		return
+	}
+
+	// MODIFY without AUTO_INCREMENT strips the auto-increment attribute (it must
+	// go before DROP PRIMARY KEY); COLUMN_TYPE keeps the original signedness.
+	var colType string
+	err = db.Raw(`SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'task_host_doing'
+		AND COLUMN_NAME = 'id'`).Scan(&colType).Error
+	if err != nil || colType == "" {
+		logger.Errorf("failed to get task_host_doing id column type: %v err: %v", colType, err)
+		return
+	}
+
+	err = db.Exec(fmt.Sprintf("ALTER TABLE task_host_doing MODIFY id %s NOT NULL, DROP PRIMARY KEY", colType)).Error
+	if err != nil {
+		logger.Errorf("failed to drop task_host_doing legacy primary key: %v", err)
+		return
+	}
+
+	logger.Info("dropped task_host_doing legacy primary key on id")
+}
+
 func isPostgres(db *gorm.DB) bool {
 	dialect := db.Dialector.Name()
 	return dialect == "postgres"
@@ -58,48 +107,60 @@ func MigrateTables(db *gorm.DB) error {
 	var tableOptions string
 	switch db.Dialector.(type) {
 	case *mysql.Dialector:
-		tableOptions = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+		tableOptions = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
 	}
 	if tableOptions != "" {
 		db = db.Set("gorm:table_options", tableOptions)
 	}
 	dts := []interface{}{&RecordingRule{}, &AlertRule{}, &AlertSubscribe{}, &AlertMute{},
-		&TaskRecord{}, &ChartShare{}, &Target{}, &Configs{}, &Datasource{}, &NotifyTpl{},
+		&TaskRecord{}, &TaskTpl{}, &ChartShare{}, &Target{}, &Configs{}, &Datasource{}, &NotifyTpl{},
 		&Board{}, &BoardBusigroup{}, &Users{}, &SsoConfig{}, &models.BuiltinMetric{},
-		&models.MetricFilter{}, &models.NotificaitonRecord{},
-		&models.TargetBusiGroup{}, &EsIndexPatternMigrate{}, &DashAnnotation{}}
+		&models.MetricFilter{}, &models.NotificationRecord{}, &models.TargetBusiGroup{},
+		&models.UserToken{}, &models.DashAnnotation{}, MessageTemplate{}, NotifyRule{}, NotifyChannelConfig{}, &EsIndexPatternMigrate{},
+		&models.EventPipeline{}, &models.EmbeddedProduct{}, &models.SourceToken{},
+		&models.SavedView{}, &models.UserViewFavorite{},
+		&models.AILLMConfig{}, &models.AIAgent{}, &models.AISkill{}, &models.MCPServer{},
+		&models.AssistantChatRow{}}
 
 	if isPostgres(db) {
+		dts = append(dts, &models.AssistantMessageRow{}) // PostgreSQL: text is unlimited
 		dts = append(dts, &models.PostgresBuiltinComponent{})
+		dts = append(dts, &models.PostgresAISkillFile{})
+		dts = append(dts, &models.PostgresEventPipelineExecution{})
+		DropUniqueFiledLimit(db, &models.PostgresBuiltinComponent{}, "idx_ident", "idx_ident")
 	} else {
+		dts = append(dts, &models.MysqlAssistantMessageRow{}) // MySQL: mediumtext; SQLite: treated as text
 		dts = append(dts, &models.BuiltinComponent{})
+		dts = append(dts, &models.AISkillFile{})
+		dts = append(dts, &models.EventPipelineExecution{})
+		DropUniqueFiledLimit(db, &models.BuiltinComponent{}, "idx_ident", "idx_ident")
 	}
 
 	if !db.Migrator().HasColumn(&imodels.TaskSchedulerHealth{}, "scheduler") {
 		dts = append(dts, &imodels.TaskSchedulerHealth{})
 	}
 
-	if !columnHasIndex(db, &AlertHisEvent{}, "original_tags") ||
-		!columnHasIndex(db, &AlertCurEvent{}, "original_tags") {
-		asyncDts := []interface{}{&AlertHisEvent{}, &AlertCurEvent{}}
-
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					logger.Errorf("panic to migrate table: %v", r)
-				}
-			}()
-
-			for _, dt := range asyncDts {
-				if err := db.AutoMigrate(dt); err != nil {
-					logger.Errorf("failed to migrate table %+v err:%v", dt, err)
-				}
+	asyncDts := []interface{}{&AlertHisEvent{}, &AlertCurEvent{}}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Errorf("panic to migrate table: %v", r)
 			}
 		}()
-	}
+
+		for _, dt := range asyncDts {
+			if err := db.AutoMigrate(dt); err != nil {
+				logger.Errorf("failed to migrate table %+v err:%v", dt, err)
+			}
+		}
+	}()
 
 	if !db.Migrator().HasTable(&models.BuiltinPayload{}) {
-		dts = append(dts, &models.BuiltinPayload{})
+		if isPostgres(db) {
+			dts = append(dts, &models.PostgresBuiltinPayload{})
+		} else {
+			dts = append(dts, &models.BuiltinPayload{})
+		}
 	} else {
 		dts = append(dts, &BuiltinPayloads{})
 	}
@@ -125,11 +186,22 @@ func MigrateTables(db *gorm.DB) error {
 		}
 	}
 	DropUniqueFiledLimit(db, &Configs{}, "ckey", "configs_ckey_key")
-	InsertPermPoints(db)
+	// 删除 builtin_metrics 表的 idx_collector_typ_name 唯一索引
+	DropUniqueFiledLimit(db, &models.BuiltinMetric{}, "idx_collector_typ_name", "idx_collector_typ_name")
+
 	return nil
 }
 
+// AssistantChat / AssistantMessage row structs live in models package
+// (models.AssistantChatRow / models.AssistantMessageRow) so both
+// migrate and storage can share them.
+
 func DropUniqueFiledLimit(db *gorm.DB, dst interface{}, uniqueFiled string, pgUniqueFiled string) { // UNIQUE KEY (`ckey`)
+	// 先检查表是否存在，如果不存在则直接返回
+	if !db.Migrator().HasTable(dst) {
+		return
+	}
+
 	if db.Migrator().HasIndex(dst, uniqueFiled) {
 		err := db.Migrator().DropIndex(dst, uniqueFiled) //mysql  DROP INDEX
 		if err != nil {
@@ -160,67 +232,24 @@ func columnHasIndex(db *gorm.DB, dst interface{}, indexColumn string) bool {
 	return false
 }
 
-func InsertPermPoints(db *gorm.DB) {
-	var ops []models.RoleOperation
-	ops = append(ops, models.RoleOperation{
-		RoleName:  "Standard",
-		Operation: "/alert-mutes/put",
-	})
-
-	ops = append(ops, models.RoleOperation{
-		RoleName:  "Standard",
-		Operation: "/log/index-patterns",
-	})
-
-	ops = append(ops, models.RoleOperation{
-		RoleName:  "Standard",
-		Operation: "/help/variable-configs",
-	})
-
-	ops = append(ops, models.RoleOperation{
-		RoleName:  "Admin",
-		Operation: "/permissions",
-	})
-
-	ops = append(ops, models.RoleOperation{
-		RoleName:  "Standard",
-		Operation: "/ibex-settings",
-	})
-
-	for _, op := range ops {
-		var count int64
-
-		err := db.Raw("SELECT COUNT(*) FROM role_operation WHERE operation = ? AND role_name = ?",
-			op.Operation, op.RoleName).Scan(&count).Error
-
-		if err != nil {
-			logger.Errorf("check role operation exists failed, %v", err)
-			continue
-		}
-
-		if count > 0 {
-			continue
-		}
-
-		err = db.Create(&op).Error
-		if err != nil {
-			logger.Errorf("insert role operation failed, %v", err)
-		}
-	}
-}
-
 type AlertRule struct {
 	ExtraConfig       string                   `gorm:"type:text;column:extra_config"`
 	CronPattern       string                   `gorm:"type:varchar(64);column:cron_pattern"`
+	TimeZone          string                   `gorm:"type:varchar(64);column:time_zone;not null;default:''"`
 	DatasourceQueries []models.DatasourceQuery `gorm:"datasource_queries;type:text;serializer:json"` // datasource queries
+	NotifyRuleIds     []int64                  `gorm:"column:notify_rule_ids;type:varchar(1024)"`
+	NotifyVersion     int                      `gorm:"column:notify_version;type:int;default:0"`
+	PipelineConfigs   []models.PipelineConfig  `gorm:"column:pipeline_configs;type:text;serializer:json"`
 }
 
 type AlertSubscribe struct {
-	ExtraConfig string       `gorm:"type:text;column:extra_config"` // extra config
-	Severities  string       `gorm:"column:severities;type:varchar(32);not null;default:''"`
-	BusiGroups  ormx.JSONArr `gorm:"column:busi_groups;type:varchar(4096)"`
-	Note        string       `gorm:"column:note;type:varchar(1024);default:'';comment:note"`
-	RuleIds     []int64      `gorm:"column:rule_ids;type:varchar(1024)"`
+	ExtraConfig   string       `gorm:"type:text;column:extra_config"` // extra config
+	Severities    string       `gorm:"column:severities;type:varchar(32);not null;default:''"`
+	BusiGroups    ormx.JSONArr `gorm:"column:busi_groups;type:varchar(4096)"`
+	Note          string       `gorm:"column:note;type:varchar(1024);default:'';comment:note"`
+	RuleIds       []int64      `gorm:"column:rule_ids;type:varchar(1024)"`
+	NotifyRuleIds []int64      `gorm:"column:notify_rule_ids;type:varchar(1024)"`
+	NotifyVersion int          `gorm:"column:notify_version;type:int;default:0"`
 }
 
 type AlertMute struct {
@@ -243,15 +272,22 @@ type ChartShare struct {
 	DatasourceId int64 `gorm:"column:datasource_id;bigint(20);not null;default:0;comment:datasource id"`
 }
 type TaskRecord struct {
-	EventId int64 `gorm:"column:event_id;bigint(20);not null;default:0;comment:event id;index:idx_event_id"`
+	EventId      int64  `gorm:"column:event_id;bigint(20);not null;default:0;comment:event id;index:idx_event_id"`
+	AuthLevel    int    `gorm:"column:auth_level;type:int;not null;default:0;comment:ai task auth level, 0=off 1/2/3=level"`
+	SystemCaller string `gorm:"column:system_caller;type:varchar(64);not null;default:'';comment:caller system, e.g. ai-agent"`
+}
+type TaskTpl struct {
+	AuthLevel int `gorm:"column:auth_level;type:int;not null;default:0;comment:ai task auth level, 0=off 1/2/3=level"`
 }
 type AlertHisEvent struct {
-	LastEvalTime int64  `gorm:"column:last_eval_time;bigint(20);not null;default:0;comment:for time filter;index:idx_last_eval_time"`
-	OriginalTags string `gorm:"column:original_tags;type:text;comment:labels key=val,,k2=v2"`
+	LastEvalTime  int64   `gorm:"column:last_eval_time;bigint(20);not null;default:0;comment:for time filter;index:idx_last_eval_time"`
+	OriginalTags  string  `gorm:"column:original_tags;type:text;comment:labels key=val,,k2=v2"`
+	NotifyRuleIds []int64 `gorm:"column:notify_rule_ids;type:text;serializer:json;comment:notify rule ids"`
 }
 
 type AlertCurEvent struct {
-	OriginalTags string `gorm:"column:original_tags;type:text;comment:labels key=val,,k2=v2"`
+	OriginalTags  string  `gorm:"column:original_tags;type:text;comment:labels key=val,,k2=v2"`
+	NotifyRuleIds []int64 `gorm:"column:notify_rule_ids;type:text;serializer:json;comment:notify rule ids"`
 }
 
 type Target struct {
@@ -263,7 +299,9 @@ type Target struct {
 }
 
 type Datasource struct {
-	IsDefault bool `gorm:"column:is_default;type:boolean;comment:is default datasource"`
+	IsDefault  bool   `gorm:"column:is_default;type:boolean;comment:is default datasource"`
+	Identifier string `gorm:"column:identifier;type:varchar(255);default:'';comment:identifier"`
+	Weight     int    `gorm:"column:weight;type:int;default:0;comment:weight for sorting"`
 }
 
 type Configs struct {
@@ -273,20 +311,21 @@ type Configs struct {
 	External  int    `gorm:"column:external;type:int;default:0;comment:0\\:built-in 1\\:external"`
 	Encrypted int    `gorm:"column:encrypted;type:int;default:0;comment:0\\:plaintext 1\\:ciphertext"`
 	CreateAt  int64  `gorm:"column:create_at;type:int;default:0;comment:create_at"`
-	CreateBy  string `gorm:"column:create_by;type:varchar(64);default:'';comment:cerate_by"`
+	CreateBy  string `gorm:"column:create_by;type:varchar(64);default:'';comment:create_by"`
 	UpdateAt  int64  `gorm:"column:update_at;type:int;default:0;comment:update_at"`
 	UpdateBy  string `gorm:"column:update_by;type:varchar(64);default:'';comment:update_by"`
 }
 
 type NotifyTpl struct {
 	CreateAt int64  `gorm:"column:create_at;type:int;default:0;comment:create_at"`
-	CreateBy string `gorm:"column:create_by;type:varchar(64);default:'';comment:cerate_by"`
+	CreateBy string `gorm:"column:create_by;type:varchar(64);default:'';comment:create_by"`
 	UpdateAt int64  `gorm:"column:update_at;type:int;default:0;comment:update_at"`
 	UpdateBy string `gorm:"column:update_by;type:varchar(64);default:'';comment:update_by"`
 }
 
 type Board struct {
-	PublicCate int `gorm:"column:public_cate;int;not null;default:0;comment:0 anonymous 1 login 2 busi"`
+	PublicCate int    `gorm:"column:public_cate;int;not null;default:0;comment:0 anonymous 1 login 2 busi"`
+	Note       string `gorm:"column:note;type:varchar(1024);not null;default:'';comment:note"`
 }
 
 type BoardBusigroup struct {
@@ -295,8 +334,9 @@ type BoardBusigroup struct {
 }
 
 type Users struct {
-	Belong         string `gorm:"column:belong;varchar(16);default:'';comment:belong"`
+	Belong         string `gorm:"column:belong;type:varchar(16);default:'';comment:belong"`
 	LastActiveTime int64  `gorm:"column:last_active_time;type:int;default:0;comment:last_active_time"`
+	Phone          string `gorm:"column:phone;type:varchar(1024);not null;default:''"`
 }
 
 type SsoConfig struct {
@@ -304,13 +344,18 @@ type SsoConfig struct {
 }
 
 type BuiltinPayloads struct {
-	UUID        int64 `json:"uuid" gorm:"type:bigint;not null;index:idx_uuid;comment:'uuid of payload'"`
-	ComponentID int64 `json:"component_id" gorm:"type:bigint;index:idx_component,sort:asc;not null;default:0;comment:'component_id of payload'"`
+	UUID        int64  `json:"uuid" gorm:"type:bigint;not null;index:idx_uuid;comment:'uuid of payload'"`
+	ComponentID int64  `json:"component_id" gorm:"type:bigint;index:idx_component,sort:asc;not null;default:0;comment:'component_id of payload'"`
+	Note        string `json:"note" gorm:"type:varchar(1024);not null;default:'';comment:'note of payload'"`
 }
 
+// TaskHostDoing holds one row per (task id, host), so id alone must NOT be the
+// primary key. `primaryKey:false` does not work: GORM force-promotes a lone
+// `id` column to primary key (and implicitly marks int primary keys
+// auto-increment), so declare the natural composite key (id, host) instead.
 type TaskHostDoing struct {
-	Id             int64  `gorm:"column:id;index;primaryKey:false"`
-	Host           string `gorm:"column:host;size:128;not null;index"`
+	Id             int64  `gorm:"column:id;primaryKey;autoIncrement:false;index"`
+	Host           string `gorm:"column:host;size:128;not null;primaryKey;index"`
 	Clock          int64  `gorm:"column:clock;not null;default:0"`
 	Action         string `gorm:"column:action;size:16;not null"`
 	AlertTriggered bool   `gorm:"-"`
@@ -321,7 +366,8 @@ func (TaskHostDoing) TableName() string {
 }
 
 type EsIndexPatternMigrate struct {
-	CrossClusterEnabled int `gorm:"column:cross_cluster_enabled;type:int;default:0"`
+	CrossClusterEnabled int    `gorm:"column:cross_cluster_enabled;type:int;default:0"`
+	Note                string `gorm:"column:note;type:varchar(1024);default:''"`
 }
 
 func (EsIndexPatternMigrate) TableName() string {
@@ -345,4 +391,62 @@ type DashAnnotation struct {
 
 func (DashAnnotation) TableName() string {
 	return "dash_annotation"
+}
+
+type MessageTemplate struct {
+	ID                 int64             `gorm:"column:id;primaryKey;autoIncrement"`
+	Name               string            `gorm:"column:name;type:varchar(64);not null"`
+	Ident              string            `gorm:"column:ident;type:varchar(64);not null"`
+	Content            map[string]string `gorm:"column:content;type:text"`
+	UserGroupIds       []int64           `gorm:"column:user_group_ids;type:varchar(64)"`
+	NotifyChannelIdent string            `gorm:"column:notify_channel_ident;type:varchar(64);not null;default:''"`
+	Private            int               `gorm:"column:private;type:int;not null;default:0"`
+	Weight             int               `gorm:"column:weight;type:int;not null;default:0"`
+	CreateAt           int64             `gorm:"column:create_at;not null;default:0"`
+	CreateBy           string            `gorm:"column:create_by;type:varchar(64);not null;default:''"`
+	UpdateAt           int64             `gorm:"column:update_at;not null;default:0"`
+	UpdateBy           string            `gorm:"column:update_by;type:varchar(64);not null;default:''"`
+}
+
+func (t *MessageTemplate) TableName() string {
+	return "message_template"
+}
+
+type NotifyRule struct {
+	ID              int64                   `gorm:"column:id;primaryKey;autoIncrement"`
+	Name            string                  `gorm:"column:name;type:varchar(255);not null"`
+	Description     string                  `gorm:"column:description;type:text"`
+	Enable          bool                    `gorm:"column:enable;not null;default:false"`
+	UserGroupIds    []int64                 `gorm:"column:user_group_ids;type:varchar(255)"`
+	NotifyConfigs   []models.NotifyConfig   `gorm:"column:notify_configs;type:text"`
+	PipelineConfigs []models.PipelineConfig `gorm:"column:pipeline_configs;type:text"`
+	ExtraConfig     interface{}             `gorm:"column:extra_config;type:text"`
+	CreateAt        int64                   `gorm:"column:create_at;not null;default:0"`
+	CreateBy        string                  `gorm:"column:create_by;type:varchar(64);not null;default:''"`
+	UpdateAt        int64                   `gorm:"column:update_at;not null;default:0"`
+	UpdateBy        string                  `gorm:"column:update_by;type:varchar(64);not null;default:''"`
+}
+
+func (r *NotifyRule) TableName() string {
+	return "notify_rule"
+}
+
+type NotifyChannelConfig struct {
+	ID            int64                    `gorm:"column:id;primaryKey;autoIncrement"`
+	Name          string                   `gorm:"column:name;type:varchar(255);not null"`
+	Ident         string                   `gorm:"column:ident;type:varchar(255);not null"`
+	Description   string                   `gorm:"column:description;type:text"`
+	Enable        bool                     `gorm:"column:enable;not null;default:false"`
+	ParamConfig   models.NotifyParamConfig `gorm:"column:param_config;type:text"`
+	RequestType   string                   `gorm:"column:request_type;type:varchar(50);not null"`
+	RequestConfig *models.RequestConfig    `gorm:"column:request_config;type:text"`
+	Weight        int                      `gorm:"column:weight;type:int;not null;default:0"`
+	CreateAt      int64                    `gorm:"column:create_at;not null;default:0"`
+	CreateBy      string                   `gorm:"column:create_by;type:varchar(64);not null;default:''"`
+	UpdateAt      int64                    `gorm:"column:update_at;not null;default:0"`
+	UpdateBy      string                   `gorm:"column:update_by;type:varchar(64);not null;default:''"`
+}
+
+func (c *NotifyChannelConfig) TableName() string {
+	return "notify_channel"
 }

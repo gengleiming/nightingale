@@ -6,20 +6,23 @@ import (
 	"time"
 
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/strx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
-	"github.com/toolkits/pkg/str"
 )
 
 func (rt *Router) recordingRuleGets(c *gin.Context) {
 	busiGroupId := ginx.UrlParamInt64(c, "id")
 	ars, err := models.RecordingRuleGets(rt.Ctx, busiGroupId)
+	if err == nil {
+		models.FillUpdateByNicknames(rt.Ctx, ars)
+	}
 	ginx.NewRender(c).Data(ars, err)
 }
 
 func (rt *Router) recordingRuleGetsByGids(c *gin.Context) {
-	gids := str.IdsInt64(ginx.QueryStr(c, "gids", ""), ",")
+	gids := strx.IdsInt64ForAPI(ginx.QueryStr(c, "gids", ""), ",")
 	if len(gids) > 0 {
 		for _, gid := range gids {
 			rt.bgroCheck(c, gid)
@@ -39,6 +42,9 @@ func (rt *Router) recordingRuleGetsByGids(c *gin.Context) {
 	}
 
 	ars, err := models.RecordingRuleGetsByBGIds(rt.Ctx, gids)
+	if err == nil {
+		models.FillUpdateByNicknames(rt.Ctx, ars)
+	}
 	ginx.NewRender(c).Data(ars, err)
 }
 
@@ -112,6 +118,7 @@ func (rt *Router) recordingRulePutByFE(c *gin.Context) {
 	}
 
 	rt.bgrwCheck(c, ar.GroupId)
+	rt.bgroCheck(c, f.GroupId)
 
 	f.UpdateBy = c.MustGet("username").(string)
 	ginx.NewRender(c).Message(ar.Update(rt.Ctx, f))
@@ -147,6 +154,12 @@ func (rt *Router) recordingRulePutFields(c *gin.Context) {
 		bytes, err := json.Marshal(datasourceQueries)
 		ginx.Dangerous(err)
 		f.Fields["datasource_queries"] = string(bytes)
+	}
+
+	if datasourceIds, ok := f.Fields["datasource_ids"]; ok {
+		bytes, err := json.Marshal(datasourceIds)
+		ginx.Dangerous(err)
+		f.Fields["datasource_ids"] = string(bytes)
 	}
 
 	for i := 0; i < len(f.Ids); i++ {

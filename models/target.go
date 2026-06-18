@@ -1,6 +1,8 @@
 package models
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 	"sort"
 	"strings"
@@ -8,15 +10,18 @@ import (
 
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
 	"github.com/ccfos/nightingale/v6/pkg/poster"
+	"github.com/ccfos/nightingale/v6/storage"
 	"golang.org/x/exp/slices"
 
 	"github.com/pkg/errors"
 	"github.com/toolkits/pkg/container/set"
+	"github.com/toolkits/pkg/logger"
+	"github.com/toolkits/pkg/slice"
 
 	"gorm.io/gorm"
 )
 
-type TargetDeleteHookFunc func(ctx *ctx.Context, idents []string) error
+type TargetDeleteHookFunc func(tx *gorm.DB, idents []string, force bool) error
 
 type Target struct {
 	Id           int64             `json:"id" gorm:"primaryKey"`
@@ -34,6 +39,7 @@ type Target struct {
 	OS           string            `json:"os" gorm:"column:os"`
 	HostTags     []string          `json:"host_tags" gorm:"serializer:json"`
 
+	BeatTime   int64    `json:"beat_time" gorm:"-"` // 实时心跳时间，从 Redis 获取
 	UnixTime   int64    `json:"unixtime" gorm:"-"`
 	Offset     int64    `json:"offset" gorm:"-"`
 	TargetUp   float64  `json:"target_up" gorm:"-"`
@@ -95,12 +101,6 @@ func (t *Target) MatchGroupId(gid ...int64) bool {
 }
 
 func (t *Target) AfterFind(tx *gorm.DB) (err error) {
-	delta := time.Now().Unix() - t.UpdateAt
-	if delta < 60 {
-		t.TargetUp = 2
-	} else if delta < 180 {
-		t.TargetUp = 1
-	}
 	t.FillTagsMap()
 	return
 }
@@ -120,21 +120,21 @@ func TargetStatistics(ctx *ctx.Context) (*Statistics, error) {
 	return stats[0], nil
 }
 
-func TargetDel(ctx *ctx.Context, idents []string, deleteHook TargetDeleteHookFunc) error {
+func TargetDel(ctx *ctx.Context, idents []string, force bool, deleteHook TargetDeleteHookFunc) error {
 	if len(idents) == 0 {
-		panic("idents empty")
+		return errors.New("idents cannot be empty")
 	}
 
 	return DB(ctx).Transaction(func(tx *gorm.DB) error {
-		txErr := tx.Where("ident in ?", idents).Delete(new(Target)).Error
+		txErr := deleteHook(tx, idents, force)
 		if txErr != nil {
 			return txErr
 		}
-		txErr = deleteHook(ctx, idents)
+		txErr = tx.Where("ident in ?", idents).Delete(new(Target)).Error
 		if txErr != nil {
 			return txErr
 		}
-		txErr = TargetDeleteBgids(ctx, idents)
+		txErr = TargetDeleteBgids(tx, idents)
 		if txErr != nil {
 			return txErr
 		}
@@ -180,6 +180,24 @@ func BuildTargetWhereWithHosts(hosts []string) BuildTargetWhereOption {
 	}
 }
 
+func BuildTargetWhereWithIdents(idents []string) BuildTargetWhereOption {
+	return func(session *gorm.DB) *gorm.DB {
+		if len(idents) > 0 {
+			session = session.Where("ident in (?)", idents)
+		}
+		return session
+	}
+}
+
+func BuildTargetWhereExcludeIdents(idents []string) BuildTargetWhereOption {
+	return func(session *gorm.DB) *gorm.DB {
+		if len(idents) > 0 {
+			session = session.Where("ident not in (?)", idents)
+		}
+		return session
+	}
+}
+
 func BuildTargetWhereWithQuery(query string) BuildTargetWhereOption {
 	return func(session *gorm.DB) *gorm.DB {
 		if query != "" {
@@ -201,17 +219,6 @@ func BuildTargetWhereWithQuery(query string) BuildTargetWhereOption {
 	}
 }
 
-func BuildTargetWhereWithDowntime(downtime int64) BuildTargetWhereOption {
-	return func(session *gorm.DB) *gorm.DB {
-		if downtime > 0 {
-			session = session.Where("target.update_at < ?", time.Now().Unix()-downtime)
-		} else if downtime < 0 {
-			session = session.Where("target.update_at > ?", time.Now().Unix()+downtime)
-		}
-		return session
-	}
-}
-
 func buildTargetWhere(ctx *ctx.Context, options ...BuildTargetWhereOption) *gorm.DB {
 	sub := DB(ctx).Model(&Target{}).Distinct("target.ident")
 	for _, opt := range options {
@@ -226,6 +233,9 @@ func TargetTotal(ctx *ctx.Context, options ...BuildTargetWhereOption) (int64, er
 
 func TargetGets(ctx *ctx.Context, limit, offset int, order string, desc bool, options ...BuildTargetWhereOption) ([]*Target, error) {
 	var lst []*Target
+
+	order = validateOrderField(order, "ident")
+
 	if desc {
 		order += " desc"
 	} else {
@@ -259,30 +269,21 @@ func TargetCountByFilter(ctx *ctx.Context, query []map[string]interface{}) (int6
 	return Count(session)
 }
 
-func MissTargetGetsByFilter(ctx *ctx.Context, query []map[string]interface{}, ts int64) ([]*Target, error) {
-	var lst []*Target
-	session := TargetFilterQueryBuild(ctx, query, 0, 0)
-	session = session.Where("update_at < ?", ts)
-
-	err := session.Order("ident").Find(&lst).Error
-	return lst, err
-}
-
-func MissTargetCountByFilter(ctx *ctx.Context, query []map[string]interface{}, ts int64) (int64, error) {
-	session := TargetFilterQueryBuild(ctx, query, 0, 0)
-	session = session.Where("update_at < ?", ts)
-	return Count(session)
-}
-
 func TargetFilterQueryBuild(ctx *ctx.Context, query []map[string]interface{}, limit, offset int) *gorm.DB {
 	sub := DB(ctx).Model(&Target{}).Distinct("target.ident").Joins("left join " +
 		"target_busi_group on target.ident = target_busi_group.target_ident")
 	for _, q := range query {
 		tx := DB(ctx).Model(&Target{})
 		for k, v := range q {
-			if strings.Count(k, "?") > 1 {
+			switch {
+			case v == nil:
+				// v == nil 表示 k 是无占位符的纯字面 SQL 片段（例如 `target_busi_group.target_ident IS NULL`），
+				// 直接拼到 WHERE 中。调用方必须保证 k 是来自代码的常量片段、不含任何外部输入，
+				// 否则会绕过 GORM 的参数化机制造成 SQL 注入。当前唯一的写入位置是 GetHostsQuery。
+				tx = tx.Or(k)
+			case strings.Count(k, "?") > 1:
 				tx = tx.Or(k, v.([]interface{})...)
-			} else {
+			default:
 				tx = tx.Or(k, v)
 			}
 		}
@@ -423,6 +424,62 @@ func TargetsGetIdentsByIdentsAndHostIps(ctx *ctx.Context, idents, hostIps []stri
 	return inexistence, identSet.ToSlice(), nil
 }
 
+func TargetsGetIdsByIdentsAndHostIps(ctx *ctx.Context, idents, hostIps []string) (
+	map[string]string, []int64, error) {
+	inexistence := make(map[string]string)
+	idSet := set.NewInt64Set()
+
+	if len(idents) > 0 {
+		var identToIdMap []struct {
+			Ident string
+			Id    int64
+		}
+		err := DB(ctx).Model(&Target{}).Select("id, ident").Where("ident IN ?", idents).Scan(&identToIdMap).Error
+		if err != nil {
+			return nil, nil, err
+		}
+
+		identSet := set.NewStringSet()
+		for _, entry := range identToIdMap {
+			idSet.Add(entry.Id)
+			identSet.Add(entry.Ident)
+		}
+
+		for _, ident := range idents {
+			if !identSet.Exists(ident) {
+				inexistence[ident] = "Ident not found"
+			}
+		}
+	}
+
+	// Query the hostIp corresponding to idents
+	if len(hostIps) > 0 {
+		var hostIpMap []struct {
+			HostIp string
+			Ident  string
+			Id     int64
+		}
+		err := DB(ctx).Model(&Target{}).Select("id, host_ip").Where("host_ip IN ?", hostIps).Scan(&hostIpMap).Error
+		if err != nil {
+			return nil, nil, err
+		}
+
+		hostIpSet := set.NewStringSet()
+		for _, entry := range hostIpMap {
+			hostIpSet.Add(entry.HostIp)
+			idSet.Add(entry.Id)
+		}
+
+		for _, hostIp := range hostIps {
+			if !hostIpSet.Exists(hostIp) {
+				inexistence[hostIp] = "HostIp not found"
+			}
+		}
+	}
+
+	return inexistence, idSet.ToSlice(), nil
+}
+
 func TargetGetTags(ctx *ctx.Context, idents []string, ignoreHostTag bool, bgLabelKey string) (
 	[]string, error) {
 	session := DB(ctx).Model(new(Target))
@@ -558,6 +615,66 @@ func (t *Target) FillMeta(meta *HostMeta) {
 	t.RemoteAddr = meta.RemoteAddr
 }
 
+// FetchBeatTimesFromRedis 从 Redis 批量获取心跳时间，返回 ident -> updateTime 的映射
+func FetchBeatTimesFromRedis(redis storage.Redis, idents []string) map[string]int64 {
+	result := make(map[string]int64, len(idents))
+	if redis == nil || len(idents) == 0 {
+		return result
+	}
+
+	num := 0
+	var keys []string
+	for i := 0; i < len(idents); i++ {
+		keys = append(keys, WrapIdentUpdateTime(idents[i]))
+		num++
+		if num == 100 {
+			fetchBeatTimeBatch(redis, keys, result)
+			keys = keys[:0]
+			num = 0
+		}
+	}
+
+	if len(keys) > 0 {
+		fetchBeatTimeBatch(redis, keys, result)
+	}
+
+	return result
+}
+
+func fetchBeatTimeBatch(redis storage.Redis, keys []string, result map[string]int64) {
+	vals := storage.MGet(context.Background(), redis, keys)
+	for _, value := range vals {
+		if value == nil {
+			continue
+		}
+		var hut HostUpdateTime
+		if err := json.Unmarshal(value, &hut); err != nil {
+			logger.Warningf("failed to unmarshal host update time: %v", err)
+			continue
+		}
+		result[hut.Ident] = hut.UpdateTime
+	}
+}
+
+// FillTargetsBeatTime 从 Redis 批量获取心跳时间填充 target.BeatTime
+func FillTargetsBeatTime(redis storage.Redis, targets []*Target) {
+	if len(targets) == 0 {
+		return
+	}
+
+	idents := make([]string, len(targets))
+	for i, t := range targets {
+		idents[i] = t.Ident
+	}
+
+	beatTimes := FetchBeatTimesFromRedis(redis, idents)
+	for _, t := range targets {
+		if ts, ok := beatTimes[t.Ident]; ok {
+			t.BeatTime = ts
+		}
+	}
+}
+
 func TargetIdents(ctx *ctx.Context, ids []int64) ([]string, error) {
 	var ret []string
 
@@ -603,7 +720,7 @@ func CanMigrateBg(ctx *ctx.Context) bool {
 		return false
 	}
 	if cnt == 0 {
-		log.Println("target table is empty, skip migration.")
+		logger.Debug("target table is empty, skip migration.")
 		return false
 	}
 
@@ -654,27 +771,43 @@ func DoMigrateBg(ctx *ctx.Context, bgLabelKey string) error {
 		if t.GroupId == 0 {
 			continue
 		}
-		err := DB(ctx).Transaction(func(tx *gorm.DB) error {
-			// 4.1 将 group_id 迁移至关联表
-			if err := TargetBindBgids(ctx, []string{t.Ident}, []int64{t.GroupId}, nil); err != nil {
-				return err
-			}
-			if err := TargetUpdateBgid(ctx, []string{t.Ident}, 0, false); err != nil {
-				return err
-			}
-
-			// 4.2 判断该机器是否需要新增 tag
-			if bg, ok := bgById[t.GroupId]; !ok || bg.LabelEnable == 0 ||
-				strings.Contains(t.Tags, bgLabelKey+"=") {
-				return nil
-			} else {
-				return t.AddTags(ctx, []string{bgLabelKey + "=" + bg.LabelValue})
-			}
-		})
-		if err != nil {
-			log.Printf("failed to migrate %v bg, err: %v\n", t.Ident, err)
+		// 4.1 将 group_id 迁移至关联表
+		if err := TargetBindBgids(ctx, []string{t.Ident}, []int64{t.GroupId}, nil); err != nil {
+			logger.Errorf("migrate failed to migrate bgid %v to %v, err: %v", t.GroupId, t.Ident, err)
 			continue
+		}
+
+		// 4.1.1 将 group_id 迁移至关联表
+		if err := TargetUpdateBgid(ctx, []string{t.Ident}, 0, false); err != nil {
+			logger.Errorf("migrate failed to migrate ident group id to 0, ident: %v, err: %v", t.Ident, err)
+			continue
+		}
+
+		// 4.2 判断该机器是否需要新增 tag
+		if bg, ok := bgById[t.GroupId]; !ok || bg.LabelEnable == 0 ||
+			strings.Contains(t.Tags, bgLabelKey+"=") {
+			logger.Infof("migrate ident %v has no bg label tag, skip", t.Ident)
+			continue
+		} else {
+			err := t.AddTags(ctx, []string{" " + bgLabelKey + "=" + bg.LabelValue})
+			if err != nil {
+				logger.Errorf("migrate failed to add bg label tag %v to %v, err: %v", bgLabelKey+"="+bg.LabelValue, t.Ident, err)
+				continue
+			}
+			logger.Infof("migrate add bg label tag %v to %v", bgLabelKey+"="+bg.LabelValue, t.Ident)
 		}
 	}
 	return nil
+}
+
+// 返回不存在的 idents
+func TargetNoExistIdents(ctx *ctx.Context, idents []string) ([]string, error) {
+	var existingIdents []string
+	err := ctx.DB.Table("target").Where("ident in ?", idents).Pluck("ident", &existingIdents).Error
+	if err != nil {
+		return nil, err
+	}
+
+	notExistIdents := slice.SubString(idents, existingIdents)
+	return notExistIdents, nil
 }

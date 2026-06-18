@@ -55,6 +55,10 @@ type AlertHisEvent struct {
 	NotifyCurNumber    int               `json:"notify_cur_number"`    // notify: current number
 	FirstTriggerTime   int64             `json:"first_trigger_time"`   // 连续告警的首次告警时间
 	ExtraConfig        interface{}       `json:"extra_config" gorm:"-"`
+	NotifyRuleIds      []int64           `json:"notify_rule_ids" gorm:"serializer:json"`
+
+	NotifyVersion int                `json:"notify_version" gorm:"-"`
+	NotifyRules   []*EventNotifyRule `json:"notify_rules" gorm:"-"`
 }
 
 func (e *AlertHisEvent) TableName() string {
@@ -123,7 +127,7 @@ func (e *AlertHisEvent) FillNotifyGroups(ctx *ctx.Context, cache map[int64]*User
 
 func AlertHisEventTotal(
 	ctx *ctx.Context, prods []string, bgids []int64, stime, etime int64, severity int,
-	recovered int, dsIds []int64, cates []string, ruleId int64, query string) (int64, error) {
+	recovered int, dsIds []int64, cates []string, ruleId int64, query string, eventIds []int64) (int64, error) {
 	session := DB(ctx).Model(&AlertHisEvent{}).Where("last_eval_time between ? and ?", stime, etime)
 
 	if len(prods) > 0 {
@@ -154,6 +158,10 @@ func AlertHisEventTotal(
 		session = session.Where("rule_id = ?", ruleId)
 	}
 
+	if len(eventIds) > 0 {
+		session = session.Where("id in ?", eventIds)
+	}
+
 	if query != "" {
 		arr := strings.Fields(query)
 		for i := 0; i < len(arr); i++ {
@@ -167,7 +175,7 @@ func AlertHisEventTotal(
 
 func AlertHisEventGets(ctx *ctx.Context, prods []string, bgids []int64, stime, etime int64,
 	severity int, recovered int, dsIds []int64, cates []string, ruleId int64, query string,
-	limit, offset int) ([]AlertHisEvent, error) {
+	limit, offset int, eventIds []int64) ([]AlertHisEvent, error) {
 	session := DB(ctx).Where("last_eval_time between ? and ?", stime, etime)
 
 	if len(prods) != 0 {
@@ -196,6 +204,10 @@ func AlertHisEventGets(ctx *ctx.Context, prods []string, bgids []int64, stime, e
 
 	if ruleId > 0 {
 		session = session.Where("rule_id = ?", ruleId)
+	}
+
+	if len(eventIds) > 0 {
+		session = session.Where("id in ?", eventIds)
 	}
 
 	if query != "" {
@@ -237,6 +249,27 @@ func AlertHisEventGet(ctx *ctx.Context, where string, args ...interface{}) (*Ale
 
 func AlertHisEventGetById(ctx *ctx.Context, id int64) (*AlertHisEvent, error) {
 	return AlertHisEventGet(ctx, "id=?", id)
+}
+
+func AlertHisEventGetByHash(ctx *ctx.Context, hash string) (*AlertHisEvent, error) {
+	var lst []*AlertHisEvent
+	err := DB(ctx).Where("hash = ?", hash).Order("trigger_time desc").Limit(1).Find(&lst).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(lst) == 0 {
+		return nil, nil
+	}
+	return lst[0], nil
+}
+
+func AlertHisEventBatchDelete(ctx *ctx.Context, timestamp int64, severities []int, limit int) (int64, error) {
+	db := DB(ctx).Where("last_eval_time < ?", timestamp)
+	if len(severities) > 0 {
+		db = db.Where("severity IN (?)", severities)
+	}
+	res := db.Limit(limit).Delete(&AlertHisEvent{})
+	return res.RowsAffected, res.Error
 }
 
 func (m *AlertHisEvent) UpdateFieldsMap(ctx *ctx.Context, fields map[string]interface{}) error {
@@ -340,4 +373,74 @@ func EventPersist(ctx *ctx.Context, event *AlertCurEvent) error {
 	}
 
 	return nil
+}
+
+func AlertHisEventGetByIds(ctx *ctx.Context, ids []int64) ([]*AlertHisEvent, error) {
+	var lst []*AlertHisEvent
+
+	if len(ids) == 0 {
+		return lst, nil
+	}
+
+	err := DB(ctx).Where("id in ?", ids).Order("trigger_time desc").Find(&lst).Error
+	if err == nil {
+		for i := 0; i < len(lst); i++ {
+			lst[i].DB2FE()
+		}
+	}
+
+	return lst, err
+}
+
+func (e *AlertHisEvent) ToCur() *AlertCurEvent {
+	cur := AlertCurEvent{
+		Id:                 e.Id,
+		Cate:               e.Cate,
+		Cluster:            e.Cluster,
+		DatasourceId:       e.DatasourceId,
+		GroupId:            e.GroupId,
+		GroupName:          e.GroupName,
+		Hash:               e.Hash,
+		RuleId:             e.RuleId,
+		RuleName:           e.RuleName,
+		RuleProd:           e.RuleProd,
+		RuleAlgo:           e.RuleAlgo,
+		RuleNote:           e.RuleNote,
+		Severity:           e.Severity,
+		PromForDuration:    e.PromForDuration,
+		PromQl:             e.PromQl,
+		PromEvalInterval:   e.PromEvalInterval,
+		RuleConfig:         e.RuleConfig,
+		RuleConfigJson:     e.RuleConfigJson,
+		Callbacks:          e.Callbacks,
+		RunbookUrl:         e.RunbookUrl,
+		NotifyRecovered:    e.NotifyRecovered,
+		NotifyChannels:     e.NotifyChannels,
+		NotifyGroups:       e.NotifyGroups,
+		Annotations:        e.Annotations,
+		AnnotationsJSON:    e.AnnotationsJSON,
+		TargetIdent:        e.TargetIdent,
+		TargetNote:         e.TargetNote,
+		TriggerTime:        e.TriggerTime,
+		TriggerValue:       e.TriggerValue,
+		Tags:               e.Tags,
+		TagsJSON:           strings.Split(e.Tags, ",,"),
+		OriginalTags:       e.OriginalTags,
+		LastEvalTime:       e.LastEvalTime,
+		NotifyCurNumber:    e.NotifyCurNumber,
+		FirstTriggerTime:   e.FirstTriggerTime,
+		IsRecovered:        e.IsRecovered == 1,
+		TriggerValues:      e.TriggerValue,
+		CallbacksJSON:      e.CallbacksJSON,
+		NotifyChannelsJSON: e.NotifyChannelsJSON,
+		NotifyGroupsJSON:   e.NotifyGroupsJSON,
+		OriginalTagsJSON:   e.OriginalTagsJSON,
+		NotifyRuleIds:      e.NotifyRuleIds,
+		NotifyRules:        e.NotifyRules,
+		NotifyVersion:      e.NotifyVersion,
+		RecoverTime:        e.RecoverTime,
+	}
+
+	cur.SetTagsMap()
+	return &cur
 }

@@ -17,16 +17,17 @@ import (
 // A RecordingRule records its vector expression into new timeseries.
 type RecordingRule struct {
 	Id                int64             `json:"id" gorm:"primaryKey"`
-	GroupId           int64             `json:"group_id"`                                                                         // busi group id
-	DatasourceIds     string            `json:"-" gorm:"datasource_ids,omitempty"`                                                // datasource ids
-	DatasourceQueries []DatasourceQuery `json:"datasource_queries,omitempty" gorm:"datasource_queries;type:text;serializer:json"` // datasource queries
-	Cluster           string            `json:"cluster"`                                                                          // take effect by cluster, seperated by space
-	Name              string            `json:"name"`                                                                             // new metric name
-	Disabled          int               `json:"disabled"`                                                                         // 0: enabled, 1: disabled
-	PromQl            string            `json:"prom_ql"`                                                                          // just one ql for promql
-	QueryConfigs      string            `json:"-" gorm:"query_configs"`                                                           // query_configs
-	QueryConfigsJson  []QueryConfig     `json:"query_configs" gorm:"-"`                                                           // query_configs for fe
-	PromEvalInterval  int               `json:"prom_eval_interval"`                                                               // unit:s
+	GroupId           int64             `json:"group_id"` // busi group id
+	DatasourceIds     string            `json:"-" gorm:"datasource_ids,omitempty"`
+	DatasourceIdsJson []int64           `json:"datasource_ids" gorm:"-"`                             // for open source fe
+	DatasourceQueries []DatasourceQuery `json:"datasource_queries,omitempty" gorm:"serializer:json"` // datasource queries
+	Cluster           string            `json:"cluster"`                                             // take effect by cluster, separated by space
+	Name              string            `json:"name"`                                                // new metric name
+	Disabled          int               `json:"disabled"`                                            // 0: enabled, 1: disabled
+	PromQl            string            `json:"prom_ql"`                                             // just one ql for promql
+	QueryConfigs      string            `json:"-" gorm:"query_configs"`                              // query_configs
+	QueryConfigsJson  []QueryConfig     `json:"query_configs" gorm:"-"`                              // query_configs for fe
+	PromEvalInterval  int               `json:"prom_eval_interval"`                                  // unit:s
 	CronPattern       string            `json:"cron_pattern"`
 	AppendTags        string            `json:"-"`                    // split by space: service=n9e mod=api
 	AppendTagsJSON    []string          `json:"append_tags" gorm:"-"` // for fe
@@ -35,6 +36,7 @@ type RecordingRule struct {
 	CreateBy          string            `json:"create_by"`
 	UpdateAt          int64             `json:"update_at"`
 	UpdateBy          string            `json:"update_by"`
+	UpdateByNickname  string            `json:"update_by_nickname" gorm:"-"`
 }
 
 type QueryConfig struct {
@@ -43,6 +45,7 @@ type QueryConfig struct {
 	Exp               string  `json:"exp"`
 	WriteDatasourceId int64   `json:"write_datasource_id"`
 	Delay             int     `json:"delay"`
+	WritebackEnabled  bool    `json:"writeback_enabled"` // 是否写入与查询数据源相同的数据源
 }
 
 type Query struct {
@@ -58,6 +61,8 @@ func (re *RecordingRule) TableName() string {
 
 func (re *RecordingRule) FE2DB() {
 	re.AppendTags = strings.Join(re.AppendTagsJSON, " ")
+	idsByte, _ := json.Marshal(re.DatasourceIdsJson)
+	re.DatasourceIds = string(idsByte)
 
 	queryConfigsByte, _ := json.Marshal(re.QueryConfigsJson)
 	re.QueryConfigs = string(queryConfigsByte)
@@ -65,6 +70,7 @@ func (re *RecordingRule) FE2DB() {
 
 func (re *RecordingRule) DB2FE() error {
 	re.AppendTagsJSON = strings.Fields(re.AppendTags)
+	json.Unmarshal([]byte(re.DatasourceIds), &re.DatasourceIdsJson)
 
 	re.FillDatasourceQueries()
 
@@ -163,6 +169,11 @@ func (re *RecordingRule) Verify() error {
 		}
 	}
 
+	// Check if query_configs length exceeds TEXT type limit (65535 bytes)
+	if len(re.QueryConfigs) > 65535 {
+		return fmt.Errorf("query_configs length (%d bytes) exceeds TEXT type limit (65535 bytes), please reduce the configuration size", len(re.QueryConfigs))
+	}
+
 	return nil
 }
 
@@ -202,7 +213,6 @@ func (re *RecordingRule) Update(ctx *ctx.Context, ref RecordingRule) error {
 
 	ref.FE2DB()
 	ref.Id = re.Id
-	ref.GroupId = re.GroupId
 	ref.CreateAt = re.CreateAt
 	ref.CreateBy = re.CreateBy
 	ref.UpdateAt = time.Now().Unix()

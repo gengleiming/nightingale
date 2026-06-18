@@ -9,19 +9,21 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v2"
-
+	"github.com/ccfos/nightingale/v6/alert/mute"
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
+	"github.com/ccfos/nightingale/v6/pkg/strx"
 	"github.com/ccfos/nightingale/v6/pushgw/pconf"
 	"github.com/ccfos/nightingale/v6/pushgw/writer"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/copier"
+	"github.com/pkg/errors"
 	"github.com/prometheus/prometheus/prompb"
-	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/i18n"
-	"github.com/toolkits/pkg/str"
 )
+
+type AlertRuleModifyHookFunc func(ar *models.AlertRule)
 
 // Return all, front-end search and paging
 func (rt *Router) alertRuleGets(c *gin.Context) {
@@ -31,13 +33,13 @@ func (rt *Router) alertRuleGets(c *gin.Context) {
 		cache := make(map[int64]*models.UserGroup)
 		for i := 0; i < len(ars); i++ {
 			ars[i].FillNotifyGroups(rt.Ctx, cache)
-			ars[i].FillSeverities()
 		}
+		models.FillUpdateByNicknames(rt.Ctx, ars)
 	}
 	ginx.NewRender(c).Data(ars, err)
 }
 
-func getAlertCueEventTimeRange(c *gin.Context) (stime, etime int64) {
+func GetAlertCueEventTimeRange(c *gin.Context) (stime, etime int64) {
 	stime = ginx.QueryInt64(c, "stime", 0)
 	etime = ginx.QueryInt64(c, "etime", 0)
 	if etime == 0 {
@@ -50,7 +52,7 @@ func getAlertCueEventTimeRange(c *gin.Context) (stime, etime int64) {
 }
 
 func (rt *Router) alertRuleGetsByGids(c *gin.Context) {
-	gids := str.IdsInt64(ginx.QueryStr(c, "gids", ""), ",")
+	gids := strx.IdsInt64ForAPI(ginx.QueryStr(c, "gids", ""), ",")
 	if len(gids) > 0 {
 		for _, gid := range gids {
 			rt.bgroCheck(c, gid)
@@ -73,20 +75,17 @@ func (rt *Router) alertRuleGetsByGids(c *gin.Context) {
 	if err == nil {
 		cache := make(map[int64]*models.UserGroup)
 		rids := make([]int64, 0, len(ars))
-		names := make([]string, 0, len(ars))
 		for i := 0; i < len(ars); i++ {
 			ars[i].FillNotifyGroups(rt.Ctx, cache)
-			ars[i].FillSeverities()
 
 			if len(ars[i].DatasourceQueries) != 0 {
 				ars[i].DatasourceIdsJson = rt.DatasourceCache.GetIDsByDsCateAndQueries(ars[i].Cate, ars[i].DatasourceQueries)
 			}
 
 			rids = append(rids, ars[i].Id)
-			names = append(names, ars[i].UpdateBy)
 		}
 
-		stime, etime := getAlertCueEventTimeRange(c)
+		stime, etime := GetAlertCueEventTimeRange(c)
 		cnt := models.AlertCurEventCountByRuleId(rt.Ctx, rids, stime, etime)
 		if cnt != nil {
 			for i := 0; i < len(ars); i++ {
@@ -94,14 +93,7 @@ func (rt *Router) alertRuleGetsByGids(c *gin.Context) {
 			}
 		}
 
-		users := models.UserMapGet(rt.Ctx, "username in (?)", names)
-		if users != nil {
-			for i := 0; i < len(ars); i++ {
-				if user, exist := users[ars[i].UpdateBy]; exist {
-					ars[i].UpdateByNickname = user.Nickname
-				}
-			}
-		}
+		models.FillUpdateByNicknames(rt.Ctx, ars)
 	}
 	ginx.NewRender(c).Data(ars, err)
 }
@@ -133,6 +125,7 @@ func (rt *Router) alertRulesGetByService(c *gin.Context) {
 				ars[i].DatasourceIdsJson = rt.DatasourceCache.GetIDsByDsCateAndQueries(ars[i].Cate, ars[i].DatasourceQueries)
 			}
 		}
+		models.FillUpdateByNicknames(rt.Ctx, ars)
 	}
 	ginx.NewRender(c).Data(ars, err)
 }
@@ -155,8 +148,123 @@ func (rt *Router) alertRuleAddByFE(c *gin.Context) {
 	ginx.NewRender(c).Data(reterr, nil)
 }
 
+type AlertRuleTryRunForm struct {
+	EventId         int64            `json:"event_id" binding:"required"`
+	AlertRuleConfig models.AlertRule `json:"config" binding:"required"`
+}
+
+func (rt *Router) alertRuleNotifyTryRun(c *gin.Context) {
+	// check notify channels of old version
+	var f AlertRuleTryRunForm
+	ginx.BindJSON(c, &f)
+
+	hisEvent, err := models.AlertHisEventGetById(rt.Ctx, f.EventId)
+	ginx.Dangerous(err)
+
+	if hisEvent == nil {
+		ginx.Bomb(http.StatusNotFound, "event not found")
+	}
+
+	curEvent := *hisEvent.ToCur()
+	curEvent.SetTagsMap()
+
+	if f.AlertRuleConfig.NotifyVersion == 1 {
+		for _, id := range f.AlertRuleConfig.NotifyRuleIds {
+			notifyRule, err := models.GetNotifyRule(rt.Ctx, id)
+			ginx.Dangerous(err)
+			for _, notifyConfig := range notifyRule.NotifyConfigs {
+				_, err = SendNotifyChannelMessage(rt.Ctx, rt.UserCache, rt.UserGroupCache, notifyConfig, []*models.AlertCurEvent{&curEvent})
+				ginx.Dangerous(err)
+			}
+		}
+
+		ginx.NewRender(c).Data("notification test ok", nil)
+		return
+	}
+
+	if len(f.AlertRuleConfig.NotifyChannelsJSON) == 0 {
+		ginx.Bomb(http.StatusOK, "no notify channels selected")
+	}
+
+	if len(f.AlertRuleConfig.NotifyGroupsJSON) == 0 {
+		ginx.Bomb(http.StatusOK, "no notify groups selected")
+	}
+
+	ancs := make([]string, 0, len(curEvent.NotifyChannelsJSON))
+	ugids := f.AlertRuleConfig.NotifyGroupsJSON
+	ngids := make([]int64, 0)
+	for i := 0; i < len(ugids); i++ {
+		if gid, err := strconv.ParseInt(ugids[i], 10, 64); err == nil {
+			ngids = append(ngids, gid)
+		}
+	}
+	userGroups := rt.UserGroupCache.GetByUserGroupIds(ngids)
+	uids := make([]int64, 0)
+	for i := range userGroups {
+		uids = append(uids, userGroups[i].UserIds...)
+	}
+	users := rt.UserCache.GetByUserIds(uids)
+	for _, NotifyChannels := range curEvent.NotifyChannelsJSON {
+		flag := true
+		// ignore non-default channels
+		switch NotifyChannels {
+		case models.Dingtalk, models.Wecom, models.Feishu, models.Mm,
+			models.Telegram, models.Email, models.FeishuCard:
+			// do nothing
+		default:
+			continue
+		}
+		// default channels
+		for ui := range users {
+			if _, b := users[ui].ExtractToken(NotifyChannels); b {
+				flag = false
+				break
+			}
+		}
+		if flag {
+			ancs = append(ancs, NotifyChannels)
+		}
+	}
+	if len(ancs) > 0 {
+		ginx.Dangerous(errors.New(fmt.Sprintf("All users are missing notify channel configurations. Please check for missing tokens (each channel should be configured with at least one user). %v", ancs)))
+	}
+
+	ginx.NewRender(c).Data("notification test ok", nil)
+}
+
+func (rt *Router) alertRuleEnableTryRun(c *gin.Context) {
+	// check notify channels of old version
+	var f AlertRuleTryRunForm
+	ginx.BindJSON(c, &f)
+
+	hisEvent, err := models.AlertHisEventGetById(rt.Ctx, f.EventId)
+	ginx.Dangerous(err)
+
+	if hisEvent == nil {
+		ginx.Bomb(http.StatusNotFound, "event not found")
+	}
+
+	curEvent := *hisEvent.ToCur()
+	curEvent.SetTagsMap()
+
+	if f.AlertRuleConfig.Disabled == 1 {
+		ginx.Bomb(http.StatusOK, "rule is disabled")
+	}
+
+	if mute.TimeSpanMuteStrategy(&f.AlertRuleConfig, &curEvent) {
+		ginx.Bomb(http.StatusOK, "event is not match for period of time")
+	}
+
+	if mute.BgNotMatchMuteStrategy(&f.AlertRuleConfig, &curEvent, rt.TargetCache) {
+		ginx.Bomb(http.StatusOK, "event target busi group not match rule busi group")
+	}
+
+	ginx.NewRender(c).Data("event is effective", nil)
+}
+
 func (rt *Router) alertRuleAddByImport(c *gin.Context) {
 	username := c.MustGet("username").(string)
+	force := ginx.QueryBool(c, "force", false)
 
 	var lst []models.AlertRule
 	ginx.BindJSON(c, &lst)
@@ -172,10 +280,26 @@ func (rt *Router) alertRuleAddByImport(c *gin.Context) {
 				models.DataSourceQueryAll,
 			}
 		}
+
+		// 将导入的规则统一转为新版本的通知规则配置
+		lst[i].NotifyVersion = 1
+		lst[i].NotifyChannelsJSON = []string{}
+		lst[i].NotifyGroupsJSON = []string{}
+		lst[i].NotifyChannels = ""
+		lst[i].NotifyGroups = ""
+		lst[i].Callbacks = ""
+		lst[i].CallbacksJSON = []string{}
 	}
 
 	bgid := ginx.UrlParamInt64(c, "id")
-	reterr := rt.alertRuleAdd(lst, username, bgid, c.GetHeader("X-Language"))
+	lang := c.GetHeader("X-Language")
+
+	var reterr map[string]string
+	if force {
+		reterr = rt.alertRuleUpsert(lst, username, bgid, lang)
+	} else {
+		reterr = rt.alertRuleAdd(lst, username, bgid, lang)
+	}
 
 	ginx.NewRender(c).Data(reterr, nil)
 }
@@ -190,19 +314,12 @@ func (rt *Router) alertRuleAddByImportPromRule(c *gin.Context) {
 	var f promRuleForm
 	ginx.Dangerous(c.BindJSON(&f))
 
-	var pr struct {
-		Groups []models.PromRuleGroup `yaml:"groups"`
-	}
-	err := yaml.Unmarshal([]byte(f.Payload), &pr)
+	groups, err := models.ParsePromRuleYAML(f.Payload)
 	if err != nil {
-		ginx.Bomb(http.StatusBadRequest, "invalid yaml format, please use the example format. err: %v", err)
+		ginx.Bomb(http.StatusBadRequest, "%s", err.Error())
 	}
 
-	if len(pr.Groups) == 0 {
-		ginx.Bomb(http.StatusBadRequest, "input yaml is empty")
-	}
-
-	lst := models.DealPromGroup(pr.Groups, f.DatasourceQueries, f.Disabled)
+	lst := models.DealPromGroup(groups, f.DatasourceQueries, f.Disabled)
 	username := c.MustGet("username").(string)
 	bgid := ginx.UrlParamInt64(c, "id")
 	ginx.NewRender(c).Data(rt.alertRuleAdd(lst, username, bgid, c.GetHeader("X-Language")), nil)
@@ -269,12 +386,34 @@ func (rt *Router) alertRuleAdd(lst []models.AlertRule, username string, bgid int
 		}
 
 		if err := lst[i].FE2DB(); err != nil {
-			reterr[lst[i].Name] = i18n.Sprintf(lang, err.Error())
+			reterr[lst[i].Name] = translateText(lang, err.Error())
 			continue
 		}
 
 		if err := lst[i].Add(rt.Ctx); err != nil {
-			reterr[lst[i].Name] = i18n.Sprintf(lang, err.Error())
+			reterr[lst[i].Name] = translateText(lang, err.Error())
+		} else {
+			reterr[lst[i].Name] = ""
+		}
+	}
+	return reterr
+}
+
+// alertRuleUpsert 与 alertRuleAdd 对位，命中同名则覆盖；用于 force=true 的导入路径。
+// 注意：FE2DB 由 Upsert 内部按分支调用，这里不要预调用，否则覆盖分支会双调 FE2DB 污染累加型字段（如 EnableDaysOfWeek）。
+func (rt *Router) alertRuleUpsert(lst []models.AlertRule, username string, bgid int64, lang string) map[string]string {
+	count := len(lst)
+	reterr := make(map[string]string)
+	for i := 0; i < count; i++ {
+		lst[i].Id = 0
+		lst[i].GroupId = bgid
+		if username != "" {
+			lst[i].CreateBy = username // 仅插入路径生效，覆盖路径会被 existing.CreateBy 还原
+			lst[i].UpdateBy = username
+		}
+
+		if err := lst[i].Upsert(rt.Ctx); err != nil {
+			reterr[lst[i].Name] = translateText(lang, err.Error())
 		} else {
 			reterr[lst[i].Name] = ""
 		}
@@ -347,8 +486,8 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 		ginx.Bomb(http.StatusBadRequest, "fields empty")
 	}
 
-	f.Fields["update_by"] = c.MustGet("username").(string)
-	f.Fields["update_at"] = time.Now().Unix()
+	updateBy := c.MustGet("username").(string)
+	updateAt := time.Now().Unix()
 
 	for i := 0; i < len(f.Ids); i++ {
 		ar, err := models.AlertRuleGetById(rt.Ctx, f.Ids[i])
@@ -365,7 +504,6 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 				b, err := json.Marshal(originRule)
 				ginx.Dangerous(err)
 				ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"rule_config": string(b)}))
-				continue
 			}
 		}
 
@@ -378,7 +516,6 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 				b, err := json.Marshal(ar.AnnotationsJSON)
 				ginx.Dangerous(err)
 				ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"annotations": string(b)}))
-				continue
 			}
 		}
 
@@ -391,7 +528,6 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 				b, err := json.Marshal(ar.AnnotationsJSON)
 				ginx.Dangerous(err)
 				ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"annotations": string(b)}))
-				continue
 			}
 		}
 
@@ -401,7 +537,6 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 				callback := callbacks.(string)
 				if !strings.Contains(ar.Callbacks, callback) {
 					ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"callbacks": ar.Callbacks + " " + callback}))
-					continue
 				}
 			}
 		}
@@ -411,7 +546,6 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 			if callbacks, has := f.Fields["callbacks"]; has {
 				callback := callbacks.(string)
 				ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"callbacks": strings.ReplaceAll(ar.Callbacks, callback, "")}))
-				continue
 			}
 		}
 
@@ -421,13 +555,27 @@ func (rt *Router) alertRulePutFields(c *gin.Context) {
 				bytes, err := json.Marshal(datasourceQueries)
 				ginx.Dangerous(err)
 				ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{"datasource_queries": bytes}))
-				continue
 			}
 		}
 
 		for k, v := range f.Fields {
-			ginx.Dangerous(ar.UpdateColumn(rt.Ctx, k, v))
+			// 检查 v 是否为各种切片类型
+			switch v.(type) {
+			case []interface{}, []int64, []int, []string:
+				// 将切片转换为 JSON 字符串
+				bytes, err := json.Marshal(v)
+				ginx.Dangerous(err)
+				ginx.Dangerous(ar.UpdateColumn(rt.Ctx, k, string(bytes)))
+			default:
+				ginx.Dangerous(ar.UpdateColumn(rt.Ctx, k, v))
+			}
 		}
+
+		// 统一更新更新时间和更新人，只有更新时间变了，告警规则才会被引擎拉取
+		ginx.Dangerous(ar.UpdateFieldsMap(rt.Ctx, map[string]interface{}{
+			"update_by": updateBy,
+			"update_at": updateAt,
+		}))
 	}
 
 	ginx.NewRender(c).Message(nil)
@@ -451,6 +599,7 @@ func (rt *Router) alertRuleGet(c *gin.Context) {
 	err = ar.FillNotifyGroups(rt.Ctx, make(map[int64]*models.UserGroup))
 	ginx.Dangerous(err)
 
+	rt.AlertRuleModifyHook(ar)
 	ginx.NewRender(c).Data(ar, err)
 }
 
@@ -674,4 +823,75 @@ func (rt *Router) cloneToMachine(c *gin.Context) {
 	}
 
 	ginx.NewRender(c).Data(reterr, models.InsertAlertRule(rt.Ctx, newRules))
+}
+
+type alertBatchCloneForm struct {
+	RuleIds []int64 `json:"rule_ids"`
+	Bgids   []int64 `json:"bgids"`
+}
+
+// 批量克隆告警规则
+func (rt *Router) batchAlertRuleClone(c *gin.Context) {
+	me := c.MustGet("user").(*models.User)
+
+	var f alertBatchCloneForm
+	ginx.BindJSON(c, &f)
+
+	// 校验 bgids 操作权限
+	for _, bgid := range f.Bgids {
+		rt.bgrwCheck(c, bgid)
+	}
+
+	reterr := make(map[string]string, len(f.RuleIds))
+	lang := c.GetHeader("X-Language")
+
+	for _, arid := range f.RuleIds {
+		ar, err := models.AlertRuleGetById(rt.Ctx, arid)
+		for _, bgid := range f.Bgids {
+			// 为了让 bgid 和 arid 对应，将上面的 err 放到这里处理
+			if err != nil {
+				reterr[fmt.Sprintf("%d-%d", arid, bgid)] = translateText(lang, err.Error())
+				continue
+			}
+
+			if ar == nil {
+				reterr[fmt.Sprintf("%d-%d", arid, bgid)] = i18n.Sprintf(lang, "alert rule not found")
+				continue
+			}
+
+			newAr := ar.Clone(me.Username, bgid)
+			err = newAr.Add(rt.Ctx)
+			if err != nil {
+				reterr[fmt.Sprintf("%d-%d", arid, bgid)] = translateText(lang, err.Error())
+				continue
+			}
+		}
+	}
+
+	ginx.NewRender(c).Data(reterr, nil)
+}
+
+func (rt *Router) timezonesGet(c *gin.Context) {
+	// 返回常用时区列表（按时差去重，每个时差只保留一个代表性时区）
+	timezones := []string{
+		"Local",
+		"UTC",
+		"Asia/Shanghai",       // UTC+8 (代表 Asia/Hong_Kong, Asia/Singapore 等)
+		"Asia/Tokyo",          // UTC+9 (代表 Asia/Seoul 等)
+		"Asia/Dubai",          // UTC+4
+		"Asia/Kolkata",        // UTC+5:30
+		"Asia/Bangkok",        // UTC+7 (代表 Asia/Jakarta 等)
+		"Europe/London",       // UTC+0 (代表 UTC)
+		"Europe/Paris",        // UTC+1 (代表 Europe/Berlin, Europe/Rome, Europe/Madrid 等)
+		"Europe/Moscow",       // UTC+3
+		"America/New_York",    // UTC-5 (代表 America/Toronto 等)
+		"America/Chicago",     // UTC-6 (代表 America/Mexico_City 等)
+		"America/Denver",      // UTC-7
+		"America/Los_Angeles", // UTC-8
+		"America/Sao_Paulo",   // UTC-3
+		"Australia/Sydney",    // UTC+10 (代表 Australia/Melbourne 等)
+		"Pacific/Auckland",    // UTC+12
+	}
+
+	ginx.NewRender(c).Data(timezones, nil)
 }

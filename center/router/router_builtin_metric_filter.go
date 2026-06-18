@@ -3,8 +3,8 @@ package router
 import (
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/prom"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 )
 
 func (rt *Router) metricFilterGets(c *gin.Context) {
@@ -26,6 +26,8 @@ func (rt *Router) metricFilterGets(c *gin.Context) {
 			arr = append(arr, f)
 		}
 	}
+
+	models.FillUpdateByNicknames(rt.Ctx, arr)
 
 	ginx.NewRender(c).Data(arr, err)
 }
@@ -57,7 +59,7 @@ func (rt *Router) metricFilterDel(c *gin.Context) {
 			ginx.Dangerous(err)
 
 			if !HasPerm(gids, old.GroupsPerm, true) {
-				ginx.NewRender(c).Message("no permission")
+				ginx.NewRender(c).Message("forbidden")
 				return
 			}
 		}
@@ -79,7 +81,7 @@ func (rt *Router) metricFilterPut(c *gin.Context) {
 		ginx.Dangerous(err)
 
 		if !HasPerm(gids, old.GroupsPerm, true) {
-			ginx.NewRender(c).Message("no permission")
+			ginx.NewRender(c).Message("forbidden")
 			return
 		}
 	}

@@ -7,9 +7,9 @@ import (
 
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 )
 
 const defaultLimit = 300
@@ -36,6 +36,14 @@ func (rt *Router) statistic(c *gin.Context) {
 		model = models.User{}
 	case "user_group":
 		model = models.UserGroup{}
+	case "notify_rule":
+		model = models.NotifyRule{}
+	case "notify_channel":
+		model = models.NotifyChannel{}
+	case "event_pipeline":
+		statistics, err = models.EventPipelineStatistics(rt.Ctx)
+		ginx.NewRender(c).Data(statistics, err)
+		return
 	case "datasource":
 		// datasource update_at is different from others
 		statistics, err = models.DatasourceStatistics(rt.Ctx)
@@ -47,6 +55,10 @@ func (rt *Router) statistic(c *gin.Context) {
 		return
 	case "cval":
 		statistics, err = models.ConfigCvalStatistics(rt.Ctx)
+		ginx.NewRender(c).Data(statistics, err)
+		return
+	case "message_template":
+		statistics, err = models.MessageTemplateStatistics(rt.Ctx)
 		ginx.NewRender(c).Data(statistics, err)
 		return
 	default:
@@ -116,6 +128,12 @@ func UserGroup(ctx *ctx.Context, id int64) *models.UserGroup {
 		ginx.Bomb(http.StatusNotFound, "No such UserGroup")
 	}
 
+	bgids, err := models.BusiGroupIds(ctx, []int64{id})
+	ginx.Dangerous(err)
+
+	obj.BusiGroups, err = models.BusiGroupGetByIds(ctx, bgids)
+	ginx.Dangerous(err)
+
 	return obj
 }
 
@@ -160,4 +178,39 @@ func Username(c *gin.Context) string {
 		username = user.Username
 	}
 	return username
+}
+
+func HasPermission(ctx *ctx.Context, c *gin.Context, sourceType, sourceId string, isAnonymousAccess bool) bool {
+	if sourceType == "event" && isAnonymousAccess {
+		return true
+	}
+
+	// 尝试从请求中获取 __token 参数
+	token := ginx.QueryStr(c, "__token", "")
+
+	// 如果有 __token 参数，验证其合法性
+	if token != "" {
+		return ValidateSourceToken(ctx, sourceType, sourceId, token)
+	}
+
+	return false
+}
+
+func ValidateSourceToken(ctx *ctx.Context, sourceType, sourceId, token string) bool {
+	if token == "" {
+		return false
+	}
+
+	// 根据源类型、源ID和令牌获取源令牌记录
+	sourceToken, err := models.GetSourceTokenBySource(ctx, sourceType, sourceId, token)
+	if err != nil {
+		return false
+	}
+
+	// 检查令牌是否过期
+	if sourceToken.IsExpired() {
+		return false
+	}
+
+	return true
 }

@@ -11,9 +11,9 @@ import (
 	"github.com/ccfos/nightingale/v6/center/cconf"
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/tplx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 	"github.com/toolkits/pkg/str"
 )
 
@@ -25,11 +25,14 @@ func (rt *Router) notifyTplGets(c *gin.Context) {
 	m[models.EmailSubject] = struct{}{}
 
 	lst, err := models.NotifyTplGets(rt.Ctx)
+	ginx.Dangerous(err)
+
 	for i := 0; i < len(lst); i++ {
 		if _, exists := m[lst[i].Channel]; exists {
 			lst[i].BuiltIn = true
 		}
 	}
+	models.FillUpdateByNicknames(rt.Ctx, lst)
 
 	ginx.NewRender(c).Data(lst, err)
 }
@@ -45,7 +48,7 @@ func (rt *Router) notifyTplUpdateContent(c *gin.Context) {
 	ginx.Dangerous(err)
 
 	if notifyTpl.CreateBy != user.Username && !user.IsAdmin() {
-		ginx.Bomb(403, "no permission")
+		ginx.Bomb(403, "forbidden")
 	}
 
 	f.UpdateAt = time.Now().Unix()
@@ -64,7 +67,7 @@ func (rt *Router) notifyTplUpdate(c *gin.Context) {
 	ginx.Dangerous(err)
 
 	if notifyTpl.CreateBy != user.Username && !user.IsAdmin() {
-		ginx.Bomb(403, "no permission")
+		ginx.Bomb(403, "forbidden")
 	}
 
 	// get the count of the same channel and name but different id
@@ -162,10 +165,10 @@ func (rt *Router) notifyTplAdd(c *gin.Context) {
 	var f models.NotifyTpl
 	ginx.BindJSON(c, &f)
 
-        user := c.MustGet("user").(*models.User)
-        f.CreateBy = user.Username
-	
-        f.Channel = strings.TrimSpace(f.Channel)
+	user := c.MustGet("user").(*models.User)
+	f.CreateBy = user.Username
+
+	f.Channel = strings.TrimSpace(f.Channel)
 	ginx.Dangerous(templateValidate(f))
 
 	count, err := models.Count(models.DB(rt.Ctx).Model(&models.NotifyTpl{}).Where("channel = ? or name = ?", f.Channel, f.Name))
@@ -174,7 +177,7 @@ func (rt *Router) notifyTplAdd(c *gin.Context) {
 		ginx.Bomb(200, "Refuse to create duplicate channel(unique)")
 	}
 
-        f.CreateAt = time.Now().Unix()
+	f.CreateAt = time.Now().Unix()
 	ginx.NewRender(c).Message(f.Create(rt.Ctx))
 }
 
@@ -188,8 +191,21 @@ func (rt *Router) notifyTplDel(c *gin.Context) {
 	ginx.Dangerous(err)
 
 	if notifyTpl.CreateBy != user.Username && !user.IsAdmin() {
-		ginx.Bomb(403, "no permission")
+		ginx.Bomb(403, "forbidden")
 	}
 
 	ginx.NewRender(c).Message(f.NotifyTplDelete(rt.Ctx, id))
+}
+
+func (rt *Router) messageTemplateGets(c *gin.Context) {
+	id := ginx.QueryInt64(c, "id", 0)
+	name := ginx.QueryStr(c, "name", "")
+	ident := ginx.QueryStr(c, "ident", "")
+
+	tpls, err := models.MessageTemplateGets(rt.Ctx, id, name, ident)
+	if err == nil {
+		models.FillUpdateByNicknames(rt.Ctx, tpls)
+	}
+
+	ginx.NewRender(c).Data(tpls, err)
 }

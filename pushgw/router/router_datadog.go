@@ -7,7 +7,9 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
+	"github.com/ccfos/nightingale/v6/pushgw/pstat"
 	"github.com/gin-gonic/gin"
 	easyjson "github.com/mailru/easyjson"
 	"github.com/prometheus/common/model"
@@ -220,6 +222,8 @@ func (r *Router) datadogSeries(c *gin.Context) {
 		return
 	}
 
+	queueid := fmt.Sprint(atomic.AddUint64(&globalCounter, 1) % uint64(r.Pushgw.WriterOpt.QueueNumber))
+
 	var (
 		succ int
 		fail int
@@ -246,22 +250,21 @@ func (r *Router) datadogSeries(c *gin.Context) {
 		}
 
 		if ident != "" {
-			// register host
-			ids[ident] = struct{}{}
+			if r.Pushgw.GetHeartbeatFromMetric {
+				// register host
+				ids[ident] = struct{}{}
+			}
 
 			// fill tags
 			target, has := r.TargetCache.Get(ident)
 			if has {
 				r.AppendLabels(pt, target, r.BusiGroupCache)
 			}
+
+			pstat.CounterSampleReceivedByIdent.WithLabelValues(ident).Inc()
 		}
 
-		if ident != "" {
-			err = r.ForwardByIdent(c.ClientIP(), ident, pt)
-		} else {
-			err = r.ForwardByMetric(c.ClientIP(), item.Metric, pt)
-		}
-
+		err = r.ForwardToQueue(c.ClientIP(), queueid, pt)
 		if err != nil {
 			c.String(r.Pushgw.WriterOpt.OverLimitStatusCode, err.Error())
 			return
@@ -271,7 +274,7 @@ func (r *Router) datadogSeries(c *gin.Context) {
 	}
 
 	if succ > 0 {
-		CounterSampleTotal.WithLabelValues("datadog").Add(float64(succ))
+		pstat.CounterSampleTotal.WithLabelValues("datadog").Add(float64(succ))
 		r.IdentSet.MSet(ids)
 	}
 

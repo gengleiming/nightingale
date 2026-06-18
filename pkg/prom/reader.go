@@ -265,7 +265,7 @@ type API interface {
 	// LabelNames returns all the unique label names present in the block in sorted order.
 	LabelNames(ctx context.Context) ([]string, Warnings, error)
 	// LabelValues performs a query for the values of the given label.
-	LabelValues(ctx context.Context, label string, matchs []string) (model.LabelValues, Warnings, error)
+	LabelValues(ctx context.Context, label string, matches []string) (model.LabelValues, Warnings, error)
 	// Query performs a query for the given time.
 	Query(ctx context.Context, query string, ts time.Time) (model.Value, Warnings, error)
 	// QueryRange performs a query for the given range.
@@ -397,7 +397,7 @@ type Metadata struct {
 }
 
 // queryResult contains result data for a query.
-type queryResult struct {
+type QueryResult struct {
 	Type   model.ValueType `json:"resultType"`
 	Result interface{}     `json:"result"`
 
@@ -510,7 +510,7 @@ func (r *RecordingRule) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (qr *queryResult) UnmarshalJSON(b []byte) error {
+func (qr *QueryResult) UnmarshalJSON(b []byte) error {
 	v := struct {
 		Type   model.ValueType `json:"resultType"`
 		Result json.RawMessage `json:"result"`
@@ -675,11 +675,11 @@ func (h *httpAPI) LabelNames(ctx context.Context) ([]string, Warnings, error) {
 	return labelNames, w, json.Unmarshal(body, &labelNames)
 }
 
-func (h *httpAPI) LabelValues(ctx context.Context, label string, matchs []string) (model.LabelValues, Warnings, error) {
+func (h *httpAPI) LabelValues(ctx context.Context, label string, matches []string) (model.LabelValues, Warnings, error) {
 	u := h.client.URL(epLabelValues, map[string]string{"name": label})
 	q := u.Query()
 
-	for _, m := range matchs {
+	for _, m := range matches {
 		q.Add("match[]", m)
 	}
 	u.RawQuery = q.Encode()
@@ -701,7 +701,8 @@ func (h *httpAPI) Query(ctx context.Context, query string, ts time.Time) (model.
 	var warnings Warnings
 	var value model.Value
 	var statusCode int
-	for i := 0; i < 3; i++ {
+
+	for i := 0; i < 1; i++ {
 		value, warnings, statusCode, err = h.query(ctx, query, ts)
 		if err == nil {
 			return value, warnings, nil
@@ -731,7 +732,7 @@ func (h *httpAPI) query(ctx context.Context, query string, ts time.Time) (model.
 		return nil, warnings, 0, err
 	}
 
-	var qres queryResult
+	var qres QueryResult
 	return model.Value(qres.v), warnings, resp.StatusCode, json.Unmarshal(body, &qres)
 }
 
@@ -749,7 +750,7 @@ func (h *httpAPI) QueryRange(ctx context.Context, query string, r Range) (model.
 		return nil, warnings, err
 	}
 
-	var qres queryResult
+	var qres QueryResult
 
 	return qres.v, warnings, json.Unmarshal(body, &qres)
 }

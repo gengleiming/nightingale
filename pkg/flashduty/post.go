@@ -32,13 +32,25 @@ func Init(fdConf cconf.FlashDuty) {
 	}
 }
 
-type dutyResp struct {
+type dutyResp[T any] struct {
 	RequestId string `json:"request_id"`
-	Data      Data   `json:"data"`
+	Data      T      `json:"data"`
 	Error     struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+type TeamInfo struct {
+	TeamID        int64   `json:"team_id"`
+	TeamName      string  `json:"team_name"`
+	Description   string  `json:"description"`
+	CreatedAt     int64   `json:"created_at"`
+	UpdatedAt     int64   `json:"updated_at"`
+	UpdatedBy     int64   `json:"updated_by"`
+	UpdatedByName string  `json:"updated_by_name"`
+	CreatorID     int64   `json:"creator_id"`
+	RefID         string  `json:"ref_id"`
+	PersonIDs     []int64 `json:"person_ids"`
 }
 
 type Data struct {
@@ -54,14 +66,15 @@ type Item struct {
 	Phone         string `json:"phone"`
 	Email         string `json:"email"`
 	EmailVerified string `json:"email_verified"`
+	RefID         string `json:"ref_id"`
 }
 
 func PostFlashDuty(path string, appKey string, body interface{}) error {
-	_, err := PostFlashDutyWithResp(path, appKey, body)
+	_, err := PostFlashDutyWithResp[Data](path, appKey, body)
 	return err
 }
 
-func PostFlashDutyWithResp(path string, appKey string, body interface{}) (Data, error) {
+func PostFlashDutyWithResp[T any](path string, appKey string, body interface{}) (T, error) {
 	urlParams := url.Values{}
 	urlParams.Add("app_key", appKey)
 	var url string
@@ -74,7 +87,7 @@ func PostFlashDutyWithResp(path string, appKey string, body interface{}) (Data, 
 	req, _ := json.Marshal(body)
 	logger.Infof("flashduty post: url=%s, req=%s; response=%s, code=%d", url, string(req), string(response), code)
 
-	var resp dutyResp
+	var resp dutyResp[T]
 	if err == nil {
 		e := json.Unmarshal(response, &resp)
 		if e == nil && resp.Error.Message != "" {
@@ -93,28 +106,32 @@ func PostJSON(url string, timeout time.Duration, headers map[string]string, v in
 		return
 	}
 
-	bf := bytes.NewBuffer(bs)
-
 	client := http.Client{
 		Timeout: timeout,
 	}
 
-	req, err := http.NewRequest("POST", url, bf)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	if len(headers) > 0 {
+	newRequest := func() (*http.Request, error) {
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(bs))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
+		return req, nil
 	}
 
 	var resp *http.Response
 
 	if len(retries) > 0 {
 		for i := 0; i < retries[0]; i++ {
+			var req *http.Request
+			req, err = newRequest()
+			if err != nil {
+				return
+			}
+
 			resp, err = client.Do(req)
 			if err == nil {
 				break
@@ -132,6 +149,11 @@ func PostJSON(url string, timeout time.Duration, headers map[string]string, v in
 			}
 		}
 	} else {
+		var req *http.Request
+		req, err = newRequest()
+		if err != nil {
+			return
+		}
 		resp, err = client.Do(req)
 	}
 

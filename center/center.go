@@ -2,9 +2,12 @@ package center
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/ccfos/nightingale/v6/dscache"
+
+	"github.com/toolkits/pkg/logger"
 
 	"github.com/ccfos/nightingale/v6/alert"
 	"github.com/ccfos/nightingale/v6/alert/astats"
@@ -13,7 +16,6 @@ import (
 	alertrt "github.com/ccfos/nightingale/v6/alert/router"
 	"github.com/ccfos/nightingale/v6/center/cconf"
 	"github.com/ccfos/nightingale/v6/center/cconf/rsa"
-	"github.com/ccfos/nightingale/v6/center/cstats"
 	"github.com/ccfos/nightingale/v6/center/integration"
 	"github.com/ccfos/nightingale/v6/center/metas"
 	centerrt "github.com/ccfos/nightingale/v6/center/router"
@@ -60,7 +62,6 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	}
 
 	i18nx.Init(configDir)
-	cstats.Init()
 	flashduty.Init(config.Center.FlashDuty)
 
 	db, err := storage.New(config.DB)
@@ -70,6 +71,7 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	ctx := ctx.NewContext(context.Background(), db, true)
 	migrate.Migrate(db)
 	isRootInit := models.InitRoot(ctx)
+	models.InitDefaultAIAgent(ctx)
 
 	config.HTTP.JWTAuth.SigningKey = models.InitJWTSigningKey(ctx)
 
@@ -86,10 +88,20 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	}
 
 	metas := metas.New(redis)
-	idents := idents.New(ctx, redis)
+	idents := idents.New(ctx, redis, config.Pushgw)
 
 	syncStats := memsto.NewSyncStats()
 	alertStats := astats.NewSyncStats()
+
+	if config.Center.MigrateBusiGroupLabel || models.CanMigrateBg(ctx) {
+		models.MigrateBg(ctx, config.Pushgw.BusiGroupLabelKey)
+	}
+	if models.CanMigrateEP(ctx) {
+		models.MigrateEP(ctx)
+	}
+
+	// 初始化 siteUrl，如果为空则设置默认值
+	InitSiteUrl(ctx, config.Alert.Heartbeat.IP, config.HTTP.Port)
 
 	configCache := memsto.NewConfigCache(ctx, syncStats, config.HTTP.RSA.RSAPrivateKey, config.HTTP.RSA.RSAPassWord)
 	busiGroupCache := memsto.NewBusiGroupCache(ctx, syncStats)
@@ -102,6 +114,10 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	userGroupCache := memsto.NewUserGroupCache(ctx, syncStats)
 	taskTplCache := memsto.NewTaskTplCache(ctx)
 	configCvalCache := memsto.NewCvalCache(ctx, syncStats)
+	notifyRuleCache := memsto.NewNotifyRuleCache(ctx, syncStats)
+	notifyChannelCache := memsto.NewNotifyChannelCache(ctx, syncStats)
+	messageTemplateCache := memsto.NewMessageTemplateCache(ctx, syncStats)
+	userTokenCache := memsto.NewUserTokenCache(ctx, syncStats)
 
 	sso := sso.Init(config.Center, ctx, configCache)
 	promClients := prom.NewPromClient(ctx)
@@ -111,26 +127,21 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	externalProcessors := process.NewExternalProcessors()
 
 	macros.RegisterMacro(macros.MacroInVain)
-	dscache.Init(ctx, false)
-	alert.Start(config.Alert, config.Pushgw, syncStats, alertStats, externalProcessors, targetCache, busiGroupCache, alertMuteCache, alertRuleCache, notifyConfigCache, taskTplCache, dsCache, ctx, promClients, userCache, userGroupCache)
+	dscache.Init(ctx, false, config.Alert.Heartbeat.EngineName)
+	alert.Start(config.Alert, config.Pushgw, syncStats, alertStats, externalProcessors, targetCache, busiGroupCache, alertMuteCache, alertRuleCache, notifyConfigCache, taskTplCache, dsCache, ctx, promClients, userCache, userGroupCache, notifyRuleCache, notifyChannelCache, messageTemplateCache, configCvalCache)
 
 	writers := writer.NewWriters(config.Pushgw)
 
 	go version.GetGithubVersion()
 
 	go cron.CleanNotifyRecord(ctx, config.Center.CleanNotifyRecordDay)
+	go cron.CleanPipelineExecution(ctx, config.Center.CleanPipelineExecutionDay)
 
-	alertrtRouter := alertrt.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors)
+	alertrtRouter := alertrt.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors, config.Log.Dir)
 	centerRouter := centerrt.New(config.HTTP, config.Center, config.Alert, config.Ibex,
 		cconf.Operations, dsCache, notifyConfigCache, promClients,
-		redis, sso, ctx, metas, idents, targetCache, userCache, userGroupCache)
+		redis, sso, ctx, metas, idents, targetCache, userCache, userGroupCache, userTokenCache, config.Log.Dir)
 	pushgwRouter := pushgwrt.New(config.HTTP, config.Pushgw, config.Alert, targetCache, busiGroupCache, idents, metas, writers, ctx)
-
-	go func() {
-		if config.Center.MigrateBusiGroupLabel || models.CanMigrateBg(ctx) {
-			models.MigrateBg(ctx, pushgwRouter.Pushgw.BusiGroupLabelKey)
-		}
-	}()
 
 	r := httpx.GinEngine(config.Global.RunMode, config.HTTP, configCvalCache.PrintBodyPaths, configCvalCache.PrintAccessLog)
 
@@ -155,4 +166,68 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 		logxClean()
 		httpClean()
 	}, nil
+}
+
+// initSiteUrl 初始化 site_info 中的 site_url，如果为空则使用服务器IP和端口设置默认值
+func InitSiteUrl(ctx *ctx.Context, serverIP string, serverPort int) {
+	// 构造默认的 SiteUrl
+	defaultSiteUrl := fmt.Sprintf("http://%s:%d", serverIP, serverPort)
+
+	// 获取现有的 site_info 配置
+	siteInfoStr, err := models.ConfigsGet(ctx, "site_info")
+	if err != nil {
+		logger.Errorf("failed to get site_info config: %v", err)
+		return
+	}
+
+	// 如果 site_info 不存在，创建新的
+	if siteInfoStr == "" {
+		newSiteInfo := memsto.SiteInfo{
+			SiteUrl: defaultSiteUrl,
+		}
+		siteInfoBytes, err := json.Marshal(newSiteInfo)
+		if err != nil {
+			logger.Errorf("failed to marshal site_info: %v", err)
+			return
+		}
+
+		err = models.ConfigsSet(ctx, "site_info", string(siteInfoBytes))
+		if err != nil {
+			logger.Errorf("failed to set site_info: %v", err)
+			return
+		}
+
+		logger.Infof("initialized site_url with default value: %s", defaultSiteUrl)
+		return
+	}
+
+	// 检查现有的 site_info 中的 site_url 字段
+	var existingSiteInfo memsto.SiteInfo
+	err = json.Unmarshal([]byte(siteInfoStr), &existingSiteInfo)
+	if err != nil {
+		logger.Errorf("failed to unmarshal site_info: %v", err)
+		return
+	}
+
+	// 如果 site_url 已经有值，则不需要初始化
+	if existingSiteInfo.SiteUrl != "" {
+		return
+	}
+
+	// 设置 site_url
+	existingSiteInfo.SiteUrl = defaultSiteUrl
+
+	siteInfoBytes, err := json.Marshal(existingSiteInfo)
+	if err != nil {
+		logger.Errorf("failed to marshal updated site_info: %v", err)
+		return
+	}
+
+	err = models.ConfigsSet(ctx, "site_info", string(siteInfoBytes))
+	if err != nil {
+		logger.Errorf("failed to update site_info: %v", err)
+		return
+	}
+
+	logger.Infof("initialized site_url with default value: %s", defaultSiteUrl)
 }

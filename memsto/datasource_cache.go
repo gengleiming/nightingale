@@ -75,17 +75,23 @@ func (d *DatasourceCacheType) Set(ds map[int64]*models.Datasource, total, lastUp
 	d.CateToIDs = cateToDs
 	d.ds = ds
 	d.CateToNames = cateToNames
-	d.Unlock()
-
-	// only one goroutine used, so no need lock
 	d.statTotal = total
 	d.statLastUpdated = lastUpdated
+	d.Unlock()
 }
 
 func (d *DatasourceCacheType) GetById(id int64) *models.Datasource {
 	d.RLock()
 	defer d.RUnlock()
 	return d.ds[id]
+}
+
+// GetStat 返回缓存当前同步到的 (total, lastUpdated)。外部据此判断 GetById 读到的快照版本，
+// 与缓存内部 StatChanged 判定同源——缓存何时刷新内容，该值就何时变化。
+func (d *DatasourceCacheType) GetStat() (total, lastUpdated int64) {
+	d.RLock()
+	defer d.RUnlock()
+	return d.statTotal, d.statLastUpdated
 }
 
 func (d *DatasourceCacheType) SyncDatasources() {
@@ -134,8 +140,6 @@ func (d *DatasourceCacheType) syncDatasources() error {
 	ms := time.Since(start).Milliseconds()
 	d.stats.GaugeCronDuration.WithLabelValues("sync_datasources").Set(float64(ms))
 	d.stats.GaugeSyncNumber.WithLabelValues("sync_datasources").Set(float64(len(ds)))
-
-	logger.Infof("timer: sync datasources done, cost: %dms, number: %d", ms, len(ds))
 	dumper.PutSyncRecord("datasources", start.Unix(), ms, len(ds), "success")
 
 	return nil

@@ -17,6 +17,7 @@ import (
 	"github.com/tidwall/match"
 	"github.com/toolkits/pkg/logger"
 	"github.com/toolkits/pkg/str"
+	"gorm.io/gorm"
 )
 
 const (
@@ -28,8 +29,13 @@ const (
 	PROMETHEUS    = "prometheus"
 	TDENGINE      = "tdengine"
 	ELASTICSEARCH = "elasticsearch"
+	MYSQL         = "mysql"
+	POSTGRESQL    = "pgsql"
+	DORIS         = "doris"
+	OPENSEARCH    = "opensearch"
 
-	CLICKHOUSE = "ck"
+	CLICKHOUSE   = "ck"
+	VICTORIALOGS = "victorialogs"
 )
 
 const (
@@ -47,14 +53,21 @@ const (
 	AlertRuleRecoverDuration0Sec = 0
 )
 
+const (
+	SeverityEmergency = 1
+	SeverityWarning   = 2
+	SeverityNotice    = 3
+	SeverityLowest    = 4
+)
+
 type AlertRule struct {
 	Id                    int64                  `json:"id" gorm:"primaryKey"`
-	GroupId               int64                  `json:"group_id"` // busi group id
-	Cate                  string                 `json:"cate"`     // alert rule cate (prometheus|elasticsearch)
-	DatasourceIds         string                 `json:"-" gorm:"datasource_ids"`
+	GroupId               int64                  `json:"group_id"`                                                               // busi group id
+	Cate                  string                 `json:"cate"`                                                                   // alert rule cate (prometheus|elasticsearch)
+	DatasourceIds         string                 `json:"-" gorm:"datasource_ids"`                                                // Deprecated: use DatasourceQueries instead
 	DatasourceIdsJson     []int64                `json:"datasource_ids,omitempty" gorm:"-"`                                      // alert rule list page use this field
 	DatasourceQueries     []DatasourceQuery      `json:"datasource_queries" gorm:"datasource_queries;type:text;serializer:json"` // datasource queries
-	Cluster               string                 `json:"cluster"`                                                                // take effect by clusters, seperated by space
+	Cluster               string                 `json:"cluster"`                                                                // Deprecated: use DatasourceQueries instead                                                           // take effect by clusters, separated by space
 	Name                  string                 `json:"name"`                                                                   // rule name
 	Note                  string                 `json:"note"`                                                                   // will sent in notify
 	Prod                  string                 `json:"prod"`                                                                   // product empty means n9e
@@ -65,33 +78,33 @@ type AlertRule struct {
 	Severity              int                    `json:"severity"`                                                               // 1: Emergency 2: Warning 3: Notice
 	Severities            []int                  `json:"severities" gorm:"-"`                                                    // 1: Emergency 2: Warning 3: Notice
 	Disabled              int                    `json:"disabled"`                                                               // 0: enabled, 1: disabled
-	PromForDuration       int                    `json:"prom_for_duration"`                                                      // prometheus for, unit:s
+	PromForDuration       int                    `json:"prom_for_duration"`                                                      // Deprecated: use cron pattern instead                                                     // prometheus for, unit:s
 	PromQl                string                 `json:"prom_ql"`                                                                // just one ql
 	RuleConfig            string                 `json:"-" gorm:"rule_config"`                                                   // rule config
 	RuleConfigJson        interface{}            `json:"rule_config" gorm:"-"`                                                   // rule config for fe
 	EventRelabelConfig    []*pconf.RelabelConfig `json:"event_relabel_config" gorm:"-"`                                          // event relabel config
 	PromEvalInterval      int                    `json:"prom_eval_interval"`                                                     // unit:s
-	EnableStime           string                 `json:"-"`                                                                      // split by space: "00:00 10:00 12:00"
-	EnableStimeJSON       string                 `json:"enable_stime" gorm:"-"`                                                  // for fe
+	EnableStime           string                 `json:"-"`                                                                      // Deprecated                                                                  // split by space: "00:00 10:00 12:00"
+	EnableStimeJSON       string                 `json:"enable_stime" gorm:"-"`                                                  // Deprecated                                               // for fe
 	EnableStimesJSON      []string               `json:"enable_stimes" gorm:"-"`                                                 // for fe
-	EnableEtime           string                 `json:"-"`                                                                      // split by space: "00:00 10:00 12:00"
-	EnableEtimeJSON       string                 `json:"enable_etime" gorm:"-"`                                                  // for fe
+	EnableEtime           string                 `json:"-"`                                                                      // Deprecated                                                                // split by space: "00:00 10:00 12:00"
+	EnableEtimeJSON       string                 `json:"enable_etime" gorm:"-"`                                                  // Deprecated                                             // for fe
 	EnableEtimesJSON      []string               `json:"enable_etimes" gorm:"-"`                                                 // for fe
-	EnableDaysOfWeek      string                 `json:"-"`                                                                      // eg: "0 1 2 3 4 5 6 ; 0 1 2"
-	EnableDaysOfWeekJSON  []string               `json:"enable_days_of_week" gorm:"-"`                                           // for fe
+	EnableDaysOfWeek      string                 `json:"-"`                                                                      // Deprecated                                                             // eg: "0 1 2 3 4 5 6 ; 0 1 2"
+	EnableDaysOfWeekJSON  []string               `json:"enable_days_of_week" gorm:"-"`                                           // Deprecated                                         // for fe
 	EnableDaysOfWeeksJSON [][]string             `json:"enable_days_of_weeks" gorm:"-"`                                          // for fe
 	EnableInBG            int                    `json:"enable_in_bg"`                                                           // 0: global 1: enable one busi-group
 	NotifyRecovered       int                    `json:"notify_recovered"`                                                       // whether notify when recovery
-	NotifyChannels        string                 `json:"-"`                                                                      // split by space: sms voice email dingtalk wecom
-	NotifyChannelsJSON    []string               `json:"notify_channels" gorm:"-"`                                               // for fe
-	NotifyGroups          string                 `json:"-"`                                                                      // split by space: 233 43
-	NotifyGroupsObj       []UserGroup            `json:"notify_groups_obj" gorm:"-"`                                             // for fe
-	NotifyGroupsJSON      []string               `json:"notify_groups" gorm:"-"`                                                 // for fe
+	NotifyChannels        string                 `json:"-"`                                                                      // Deprecated                                                        // split by space: sms voice email dingtalk wecom
+	NotifyChannelsJSON    []string               `json:"notify_channels" gorm:"-"`                                               // Deprecated                                            // for fe
+	NotifyGroups          string                 `json:"-"`                                                                      // Deprecated                                            // split by space: 233 43
+	NotifyGroupsObj       []UserGroup            `json:"notify_groups_obj" gorm:"-"`                                             // Deprecated                                         // for fe
+	NotifyGroupsJSON      []string               `json:"notify_groups" gorm:"-"`                                                 // Deprecated                                          // for fe
 	NotifyRepeatStep      int                    `json:"notify_repeat_step"`                                                     // notify repeat interval, unit: min
 	NotifyMaxNumber       int                    `json:"notify_max_number"`                                                      // notify: max number
 	RecoverDuration       int64                  `json:"recover_duration"`                                                       // unit: s
-	Callbacks             string                 `json:"-"`                                                                      // split by space: http://a.com/api/x http://a.com/api/y'
-	CallbacksJSON         []string               `json:"callbacks" gorm:"-"`                                                     // for fe
+	Callbacks             string                 `json:"-"`                                                                      // Deprecated                                                             // split by space: http://a.com/api/x http://a.com/api/y'
+	CallbacksJSON         []string               `json:"callbacks" gorm:"-"`                                                     // Deprecated                                                 // for fe
 	RunbookUrl            string                 `json:"runbook_url"`                                                            // sop url
 	AppendTags            string                 `json:"-"`                                                                      // split by space: service=n9e mod=api
 	AppendTagsJSON        []string               `json:"append_tags" gorm:"-"`                                                   // for fe
@@ -107,11 +120,23 @@ type AlertRule struct {
 	CurEventCount         int64                  `json:"cur_event_count" gorm:"-"`
 	UpdateByNickname      string                 `json:"update_by_nickname" gorm:"-"` // for fe
 	CronPattern           string                 `json:"cron_pattern"`
+	TimeZone              string                 `json:"time_zone" gorm:"default:''"` // timezone for alert rule, e.g. "Asia/Shanghai", "UTC", empty for default
+	NotifyRuleIds         []int64                `json:"notify_rule_ids" gorm:"serializer:json"`
+	PipelineConfigs       []PipelineConfig       `json:"pipeline_configs" gorm:"serializer:json"`
+	NotifyVersion         int                    `json:"notify_version"` // 0: old, 1: new
 }
 
 type ChildVarConfig struct {
 	ParamVal        []map[string]ParamQuery `json:"param_val"`
 	ChildVarConfigs *ChildVarConfig         `json:"child_var_configs"`
+}
+
+func (c ChildVarConfig) MarshalJSON() ([]byte, error) {
+	if c.ParamVal == nil {
+		c.ParamVal = []map[string]ParamQuery{}
+	}
+	type Alias ChildVarConfig
+	return json.Marshal(Alias(c))
 }
 
 type ParamQuery struct {
@@ -122,6 +147,14 @@ type ParamQuery struct {
 type VarConfig struct {
 	ParamVal        []ParamQueryForFirst `json:"param_val"`
 	ChildVarConfigs *ChildVarConfig      `json:"child_var_configs"`
+}
+
+func (v VarConfig) MarshalJSON() ([]byte, error) {
+	if v.ParamVal == nil {
+		v.ParamVal = []ParamQueryForFirst{}
+	}
+	type Alias VarConfig
+	return json.Marshal(Alias(v))
 }
 
 // ParamQueryForFirst 同 ParamQuery，仅在第一层出现
@@ -161,9 +194,9 @@ type PromRuleConfig struct {
 type RecoverJudge int
 
 const (
-	Origin             RecoverJudge = 0
-	RecoverWithoutData RecoverJudge = 1
-	RecoverOnCondition RecoverJudge = 2
+	Origin               RecoverJudge = 0
+	NotRecoverWhenNoData RecoverJudge = 1
+	RecoverOnCondition   RecoverJudge = 2
 )
 
 type RecoverConfig struct {
@@ -194,10 +227,21 @@ type HostTrigger struct {
 }
 
 type RuleQuery struct {
-	Version  string        `json:"version"`
-	Inhibit  bool          `json:"inhibit"`
-	Queries  []interface{} `json:"queries"`
-	Triggers []Trigger     `json:"triggers"`
+	Version           string        `json:"version"`
+	Inhibit           bool          `json:"inhibit"`
+	Queries           []interface{} `json:"queries"`
+	ExpTriggerDisable bool          `json:"exp_trigger_disable"`
+	Triggers          []Trigger     `json:"triggers"`
+	NodataTrigger     NodataTrigger `json:"nodata_trigger"`
+	AnomalyTrigger    interface{}   `json:"anomaly_trigger"`
+	TriggerType       TriggerType   `json:"trigger_type,omitempty"` // 在告警事件中使用
+}
+
+type NodataTrigger struct {
+	Enable             bool `json:"enable"`
+	Severity           int  `json:"severity"`
+	ResolveAfterEnable bool `json:"resolve_after_enable"`
+	ResolveAfter       int  `json:"resolve_after"` // 单位秒
 }
 
 type Trigger struct {
@@ -353,11 +397,40 @@ func GetHostsQuery(queries []HostQuery) []map[string]interface{} {
 		switch q.Key {
 		case "group_ids":
 			ids := ParseInt64(q.Values)
+			if len(ids) == 0 {
+				// 没有有效的 group_id，跳过该过滤项，避免生成 `group_id IN ()` 这种非法 SQL。
+				continue
+			}
+			hasZero := false
+			nonZeroIds := make([]int64, 0, len(ids))
+			for _, id := range ids {
+				if id == 0 {
+					hasZero = true
+				} else {
+					nonZeroIds = append(nonZeroIds, id)
+				}
+			}
+			// 注意：以下分支依赖 TargetFilterQueryBuild 在外层对 target_busi_group 使用 LEFT JOIN，
+			// 才能让 target_ident IS NULL 表示「该 target 未归组」。如果外层换成 INNER JOIN，
+			// `== [0]` 与 `!= [0]` 的语义都会被打破。
 			if q.Op == "==" {
-				m["target_busi_group.group_id in (?)"] = ids
+				switch {
+				case hasZero && len(nonZeroIds) == 0:
+					m["target_busi_group.target_ident IS NULL"] = nil
+				case hasZero && len(nonZeroIds) > 0:
+					m["(target_busi_group.target_ident IS NULL OR target_busi_group.group_id IN (?))"] = nonZeroIds
+				default:
+					m["target_busi_group.group_id in (?)"] = nonZeroIds
+				}
 			} else {
-				m["target.ident not in (select target_ident "+
-					"from target_busi_group where group_id in (?))"] = ids
+				switch {
+				case hasZero && len(nonZeroIds) == 0:
+					m["target_busi_group.target_ident IS NOT NULL"] = nil
+				case hasZero && len(nonZeroIds) > 0:
+					m["target_busi_group.target_ident IS NOT NULL AND NOT EXISTS (SELECT 1 FROM target_busi_group tbg WHERE tbg.target_ident = target.ident AND tbg.group_id IN (?))"] = nonZeroIds
+				default:
+					m["NOT EXISTS (SELECT 1 FROM target_busi_group tbg WHERE tbg.target_ident = target.ident AND tbg.group_id IN (?))"] = nonZeroIds
+				}
 			}
 		case "tags":
 			lst := []string{}
@@ -452,12 +525,20 @@ func (ar *AlertRule) Verify() error {
 	//	ar.DatasourceIdsJson = []int64{0}
 	//}
 
-	if str.Dangerous(ar.Name) {
-		return errors.New("Name has invalid characters")
-	}
-
+	ar.Name = strings.TrimSpace(ar.Name)
 	if ar.Name == "" {
 		return errors.New("name is blank")
+	}
+
+	if ar.TimeZone != "" {
+		_, err := time.LoadLocation(ar.TimeZone)
+		if err != nil {
+			return fmt.Errorf("invalid timezone: %s", ar.TimeZone)
+		}
+	}
+
+	if str.Dangerous(ar.Name) {
+		return errors.New("Name has invalid characters")
 	}
 
 	if ar.Prod == "" {
@@ -483,10 +564,16 @@ func (ar *AlertRule) Verify() error {
 
 	ar.AppendTags = strings.TrimSpace(ar.AppendTags)
 	arr := strings.Fields(ar.AppendTags)
+	appendTagKeys := make(map[string]struct{})
 	for i := 0; i < len(arr); i++ {
-		if len(strings.Split(arr[i], "=")) != 2 {
+		if !strings.Contains(arr[i], "=") {
 			return fmt.Errorf("AppendTags(%s) invalid", arr[i])
 		}
+		pair := strings.SplitN(arr[i], "=", 2)
+		if _, exists := appendTagKeys[pair[0]]; exists {
+			return fmt.Errorf("AppendTags has duplicate key: %s", pair[0])
+		}
+		appendTagKeys[pair[0]] = struct{}{}
 	}
 
 	gids := strings.Fields(ar.NotifyGroups)
@@ -498,6 +585,21 @@ func (ar *AlertRule) Verify() error {
 
 	if err := ar.validateCronPattern(); err != nil {
 		return err
+	}
+
+	if ar.NotifyVersion == 0 {
+		// 如果是旧版本，则清空 NotifyRuleIds
+		ar.NotifyRuleIds = []int64{}
+	}
+
+	if ar.NotifyVersion > 0 {
+		// 如果是新版本，则清空旧的通知媒介和通知组
+		ar.NotifyChannelsJSON = []string{}
+		ar.NotifyGroupsJSON = []string{}
+		ar.NotifyChannels = ""
+		ar.NotifyGroups = ""
+		ar.Callbacks = ""
+		ar.CallbacksJSON = []string{}
 	}
 
 	return nil
@@ -539,6 +641,25 @@ func (ar *AlertRule) Add(ctx *ctx.Context) error {
 	ar.UpdateAt = now
 
 	return Insert(ctx, ar)
+}
+
+// Upsert: 同 group 内若存在同名规则则覆盖（保留原 id/create_at/create_by，下游引用不破），否则插入。
+// 用于 force=true 的批量导入场景。调用方传入的 ar 不要预先调用 FE2DB —— 本方法内部处理。
+func (ar *AlertRule) Upsert(ctx *ctx.Context) error {
+	var existing AlertRule
+	err := DB(ctx).Where("group_id = ? AND name = ?", ar.GroupId, ar.Name).Take(&existing).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if err := ar.FE2DB(); err != nil {
+			return err
+		}
+		return ar.Add(ctx) // 复用 Add 的 Verify + 同名兜底（防 SELECT 与 INSERT 之间的并发插入）
+	}
+
+	return existing.Update(ctx, *ar) // Update 内部会 FE2DB、Verify，并保留 existing 的 id/create_at/create_by
 }
 
 func (ar *AlertRule) Update(ctx *ctx.Context, arf AlertRule) error {
@@ -685,6 +806,25 @@ func (ar *AlertRule) UpdateColumn(ctx *ctx.Context, column string, value interfa
 		return DB(ctx).Model(ar).UpdateColumn("annotations", string(b)).Error
 	}
 
+	if column == "notify_rule_ids" {
+		updates := map[string]interface{}{
+			"notify_version":  1,
+			"notify_channels": "",
+			"notify_groups":   "",
+			"notify_rule_ids": value,
+		}
+		return DB(ctx).Model(ar).Updates(updates).Error
+	}
+
+	if column == "notify_groups" || column == "notify_channels" {
+		updates := map[string]interface{}{
+			column:            value,
+			"notify_version":  0,
+			"notify_rule_ids": []int64{},
+		}
+		return DB(ctx).Model(ar).Updates(updates).Error
+	}
+
 	return DB(ctx).Model(ar).UpdateColumn(column, value).Error
 }
 
@@ -799,7 +939,6 @@ func (ar *AlertRule) FillNotifyGroups(ctx *ctx.Context, cache map[int64]*UserGro
 }
 
 func (ar *AlertRule) FE2DB() error {
-
 	if len(ar.EnableStimesJSON) > 0 {
 		ar.EnableStime = strings.Join(ar.EnableStimesJSON, " ")
 		ar.EnableEtime = strings.Join(ar.EnableEtimesJSON, " ")
@@ -827,14 +966,24 @@ func (ar *AlertRule) FE2DB() error {
 	ar.NotifyChannels = strings.Join(ar.NotifyChannelsJSON, " ")
 	ar.NotifyGroups = strings.Join(ar.NotifyGroupsJSON, " ")
 	ar.Callbacks = strings.Join(ar.CallbacksJSON, " ")
-	ar.AppendTags = strings.Join(ar.AppendTagsJSON, " ")
+
+	for i := range ar.AppendTagsJSON {
+		// 后面要把多个标签拼接在一起，所以每个标签里不能有空格
+		ar.AppendTagsJSON[i] = strings.ReplaceAll(ar.AppendTagsJSON[i], " ", "")
+	}
+
+	if len(ar.AppendTagsJSON) > 0 {
+		ar.AppendTags = strings.Join(ar.AppendTagsJSON, " ")
+	}
+
 	algoParamsByte, err := json.Marshal(ar.AlgoParamsJson)
 	if err != nil {
 		return fmt.Errorf("marshal algo_params err:%v", err)
 	}
 	ar.AlgoParams = string(algoParamsByte)
 
-	if ar.RuleConfigJson == nil {
+	// 老的规则，是 PromQl 和 Severity 字段，新版的规则，使用 RuleConfig 字段
+	if ar.RuleConfigJson == nil || len(ar.PromQl) > 0 {
 		query := PromQuery{
 			PromQl:   ar.PromQl,
 			Severity: ar.Severity,
@@ -889,6 +1038,10 @@ func (ar *AlertRule) DB2FE() error {
 		ar.EnableDaysOfWeekJSON = ar.EnableDaysOfWeeksJSON[0]
 	}
 
+	if ar.NotifyRuleIds == nil {
+		ar.NotifyRuleIds = make([]int64, 0)
+	}
+
 	ar.NotifyChannelsJSON = strings.Fields(ar.NotifyChannels)
 	ar.NotifyGroupsJSON = strings.Fields(ar.NotifyGroups)
 	ar.CallbacksJSON = strings.Fields(ar.Callbacks)
@@ -914,6 +1067,8 @@ func (ar *AlertRule) DB2FE() error {
 	if err != nil {
 		return err
 	}
+
+	ar.FillSeverities()
 
 	return nil
 }
@@ -946,11 +1101,8 @@ func AlertRuleExists(ctx *ctx.Context, id, groupId int64, name string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	if len(lst) == 0 {
-		return false, nil
-	}
 
-	return false, nil
+	return len(lst) > 0, nil
 }
 
 func GetAlertRuleIdsByTaskId(ctx *ctx.Context, taskId int64) ([]int64, error) {
@@ -994,6 +1146,29 @@ func AlertRuleGetsByBGIds(ctx *ctx.Context, bgids []int64) ([]AlertRule, error) 
 
 	var lst []AlertRule
 	err := session.Find(&lst).Error
+	if err == nil {
+		for i := 0; i < len(lst); i++ {
+			lst[i].DB2FE()
+		}
+	}
+
+	return lst, err
+}
+
+// AlertRuleGetsLegacyNotifyByBGIds 查老式通知配置（notify_version=0）的告警规则。
+// 用于迁移审计场景：把 notify_version 过滤下推到 SQL，避免全表拉回再内存过滤。
+// includeDisabled=false 时同时过滤 disabled=0。
+func AlertRuleGetsLegacyNotifyByBGIds(ctx *ctx.Context, bgids []int64, includeDisabled bool) ([]AlertRule, error) {
+	session := DB(ctx).Where("notify_version = ?", 0)
+	if len(bgids) > 0 {
+		session = session.Where("group_id in (?)", bgids)
+	}
+	if !includeDisabled {
+		session = session.Where("disabled = ?", 0)
+	}
+
+	var lst []AlertRule
+	err := session.Order("name").Find(&lst).Error
 	if err == nil {
 		for i := 0; i < len(lst); i++ {
 			lst[i].DB2FE()
@@ -1132,12 +1307,24 @@ func (ar *AlertRule) IsLokiRule() bool {
 	return ar.Prod == LOKI || ar.Cate == LOKI
 }
 
+func (ar *AlertRule) IsTdengineRule() bool {
+	return ar.Cate == TDENGINE
+}
+
 func (ar *AlertRule) IsHostRule() bool {
 	return ar.Prod == HOST
 }
 
-func (ar *AlertRule) IsTdengineRule() bool {
-	return ar.Cate == TDENGINE
+func (ar *AlertRule) IsInnerRule() bool {
+	return ar.Cate == TDENGINE ||
+		ar.Cate == CLICKHOUSE ||
+		ar.Cate == ELASTICSEARCH ||
+		ar.Prod == LOKI || ar.Cate == LOKI ||
+		ar.Cate == MYSQL ||
+		ar.Cate == POSTGRESQL ||
+		ar.Cate == DORIS ||
+		ar.Cate == OPENSEARCH ||
+		ar.Cate == VICTORIALOGS
 }
 
 func (ar *AlertRule) GetRuleType() string {
@@ -1175,8 +1362,6 @@ func (ar *AlertRule) UpdateEvent(event *AlertCurEvent) {
 	event.RuleProd = ar.Prod
 	event.RuleAlgo = ar.Algorithm
 	event.PromForDuration = ar.PromForDuration
-	event.RuleConfig = ar.RuleConfig
-	event.RuleConfigJson = ar.RuleConfigJson
 	event.Callbacks = ar.Callbacks
 	event.CallbacksJSON = ar.CallbacksJSON
 	event.RunbookUrl = ar.RunbookUrl
@@ -1313,6 +1498,39 @@ func GetTargetsOfHostAlertRule(ctx *ctx.Context, engineName string) (map[string]
 	return m, nil
 }
 
+// HostAlertRuleTargetsSig 计算 host 告警规则 -> target 映射的输入签名。
+// 该映射由三部分输入共同决定，任一变化都会改变结果，签名随之变化：
+//  1. host 告警规则（增删/改/启停，都会改变 count 或 max(update_at)）
+//  2. 机器与业务组的归属关系 target_busi_group
+//  3. 机器自身的 tags/host_tags 等字段（变更时 router_heartbeat 会 bump target.update_at）
+//
+// 供 memsto 在每轮同步前做变更检测：签名未变即可跳过整轮规则查询，
+// 避免每个周期对所有 host 规则各发一条全表扫描的过滤 SQL。仅 center 直连 DB 时调用。
+func HostAlertRuleTargetsSig(ctx *ctx.Context) (string, error) {
+	var ruleStat []*Statistics
+	err := DB(ctx).Model(&AlertRule{}).
+		Select("count(*) as total", "max(update_at) as last_updated").
+		Where("prod = ?", HOST).Find(&ruleStat).Error
+	if err != nil {
+		return "", err
+	}
+
+	bgStat, err := StatisticsGet(ctx, &TargetBusiGroup{})
+	if err != nil {
+		return "", err
+	}
+
+	tgStat, err := StatisticsGet(ctx, &Target{})
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%d:%d|%d:%d|%d:%d",
+		ruleStat[0].Total, ruleStat[0].LastUpdated,
+		bgStat.Total, bgStat.LastUpdated,
+		tgStat.Total, tgStat.LastUpdated), nil
+}
+
 func (ar *AlertRule) Copy(ctx *ctx.Context) (*AlertRule, error) {
 	newAr := &AlertRule{}
 	err := copier.Copy(newAr, ar)
@@ -1331,4 +1549,19 @@ func InsertAlertRule(ctx *ctx.Context, ars []*AlertRule) error {
 
 func (ar *AlertRule) Hash() string {
 	return str.MD5(fmt.Sprintf("%d_%s_%s", ar.Id, ar.DatasourceIds, ar.RuleConfig))
+}
+
+// 复制告警策略，需要提供操作者名称和新的业务组ID
+func (ar *AlertRule) Clone(operatorName string, newBgid int64) *AlertRule {
+	newAr := ar
+
+	newAr.Id = 0
+	newAr.GroupId = newBgid
+	newAr.Name = ar.Name
+	newAr.UpdateBy = operatorName
+	newAr.UpdateAt = time.Now().Unix()
+	newAr.CreateBy = operatorName
+	newAr.CreateAt = time.Now().Unix()
+
+	return newAr
 }

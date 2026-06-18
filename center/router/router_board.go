@@ -6,17 +6,17 @@ import (
 	"time"
 
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
+	"github.com/ccfos/nightingale/v6/pkg/strx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
-	"github.com/toolkits/pkg/i18n"
-	"github.com/toolkits/pkg/str"
 )
 
 type boardForm struct {
 	Name       string  `json:"name"`
 	Ident      string  `json:"ident"`
 	Tags       string  `json:"tags"`
+	Note       string  `json:"note"`
 	Configs    string  `json:"configs"`
 	Public     int     `json:"public"`
 	PublicCate int     `json:"public_cate"`
@@ -34,6 +34,7 @@ func (rt *Router) boardAdd(c *gin.Context) {
 		Name:     f.Name,
 		Ident:    f.Ident,
 		Tags:     f.Tags,
+		Note:     f.Note,
 		Configs:  f.Configs,
 		CreateBy: me.Username,
 		UpdateBy: me.Username,
@@ -51,8 +52,13 @@ func (rt *Router) boardAdd(c *gin.Context) {
 
 func (rt *Router) boardGet(c *gin.Context) {
 	bid := ginx.UrlParamStr(c, "bid")
-	board, err := models.BoardGet(rt.Ctx, "id = ? or ident = ?", bid, bid)
+	board, err := models.BoardGet(rt.Ctx, "ident = ?", bid)
 	ginx.Dangerous(err)
+
+	if board == nil {
+		board, err = models.BoardGet(rt.Ctx, "id = ?", bid)
+		ginx.Dangerous(err)
+	}
 
 	if board == nil {
 		ginx.Bomb(http.StatusNotFound, "No such dashboard")
@@ -96,7 +102,7 @@ func (rt *Router) boardGet(c *gin.Context) {
 
 // 根据 bids 参数，获取多个 board
 func (rt *Router) boardGetsByBids(c *gin.Context) {
-	bids := str.IdsInt64(ginx.QueryStr(c, "bids", ""), ",")
+	bids := strx.IdsInt64ForAPI(ginx.QueryStr(c, "bids", ""), ",")
 	boards, err := models.BoardGetsByBids(rt.Ctx, bids)
 	ginx.Dangerous(err)
 	ginx.NewRender(c).Data(boards, err)
@@ -109,6 +115,10 @@ func (rt *Router) boardPureGet(c *gin.Context) {
 	if board == nil {
 		ginx.Bomb(http.StatusNotFound, "No such dashboard")
 	}
+
+	// 清除创建者和更新者信息
+	board.CreateBy = ""
+	board.UpdateBy = ""
 
 	ginx.NewRender(c).Data(board, nil)
 }
@@ -175,10 +185,11 @@ func (rt *Router) boardPut(c *gin.Context) {
 	bo.Name = f.Name
 	bo.Ident = f.Ident
 	bo.Tags = f.Tags
+	bo.Note = f.Note
 	bo.UpdateBy = me.Username
 	bo.UpdateAt = time.Now().Unix()
 
-	err = bo.Update(rt.Ctx, "name", "ident", "tags", "update_by", "update_at")
+	err = bo.Update(rt.Ctx, "name", "ident", "tags", "note", "update_by", "update_at")
 	ginx.NewRender(c).Data(bo, err)
 }
 
@@ -248,6 +259,9 @@ func (rt *Router) boardGets(c *gin.Context) {
 	query := ginx.QueryStr(c, "query", "")
 
 	boards, err := models.BoardGetsByGroupId(rt.Ctx, bgid, query)
+	if err == nil {
+		models.FillUpdateByNicknames(rt.Ctx, boards)
+	}
 	ginx.NewRender(c).Data(boards, err)
 }
 
@@ -261,11 +275,14 @@ func (rt *Router) publicBoardGets(c *gin.Context) {
 	ginx.Dangerous(err)
 
 	boards, err := models.BoardGets(rt.Ctx, "", "public=1 and (public_cate in (?) or id in (?))", []int64{0, 1}, boardIds)
+	if err == nil {
+		models.FillUpdateByNicknames(rt.Ctx, boards)
+	}
 	ginx.NewRender(c).Data(boards, err)
 }
 
 func (rt *Router) boardGetsByGids(c *gin.Context) {
-	gids := str.IdsInt64(ginx.QueryStr(c, "gids", ""), ",")
+	gids := strx.IdsInt64ForAPI(ginx.QueryStr(c, "gids", ""), ",")
 	query := ginx.QueryStr(c, "query", "")
 
 	if len(gids) > 0 {
@@ -300,6 +317,7 @@ func (rt *Router) boardGetsByGids(c *gin.Context) {
 			boards[i].Bgids = ids
 		}
 	}
+	models.FillUpdateByNicknames(rt.Ctx, boards)
 
 	ginx.NewRender(c).Data(boards, err)
 }
@@ -346,12 +364,12 @@ func (rt *Router) boardBatchClone(c *gin.Context) {
 			newBoard := bo.Clone(me.Username, bgid, "")
 			payload, err := models.BoardPayloadGet(rt.Ctx, bo.Id)
 			if err != nil {
-				reterr[fmt.Sprintf("%s-%d", newBoard.Name, bgid)] = i18n.Sprintf(lang, err.Error())
+				reterr[fmt.Sprintf("%s-%d", newBoard.Name, bgid)] = translateText(lang, err.Error())
 				continue
 			}
 
 			if err = newBoard.AtomicAdd(rt.Ctx, payload); err != nil {
-				reterr[fmt.Sprintf("%s-%d", newBoard.Name, bgid)] = i18n.Sprintf(lang, err.Error())
+				reterr[fmt.Sprintf("%s-%d", newBoard.Name, bgid)] = translateText(lang, err.Error())
 			}
 		}
 	}

@@ -1,16 +1,40 @@
 package router
 
 import (
+	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ccfos/nightingale/v6/alert/sender"
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ctx"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
+	"github.com/ccfos/nightingale/v6/pkg/strx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
-	"github.com/toolkits/pkg/i18n"
-	"github.com/toolkits/pkg/str"
 )
+
+// parseAuthLevels 解析逗号分隔的 auth_level 字符串，支持不传(返回空)和传多个
+func parseAuthLevels(s string) []int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+
+	parts := strings.Split(s, ",")
+	levels := make([]int, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if v, err := strconv.Atoi(p); err == nil {
+			levels = append(levels, v)
+		}
+	}
+	return levels
+}
 
 func (rt *Router) taskGets(c *gin.Context) {
 	bgid := ginx.UrlParamInt64(c, "id")
@@ -18,6 +42,7 @@ func (rt *Router) taskGets(c *gin.Context) {
 	days := ginx.QueryInt64(c, "days", 7)
 	limit := ginx.QueryInt(c, "limit", 20)
 	query := ginx.QueryStr(c, "query", "")
+	authLevels := parseAuthLevels(ginx.QueryStr(c, "auth_level", ""))
 	user := c.MustGet("user").(*models.User)
 
 	creator := ""
@@ -27,10 +52,10 @@ func (rt *Router) taskGets(c *gin.Context) {
 
 	beginTime := time.Now().Unix() - days*24*3600
 
-	total, err := models.TaskRecordTotal(rt.Ctx, []int64{bgid}, beginTime, creator, query)
+	total, err := models.TaskRecordTotal(rt.Ctx, []int64{bgid}, beginTime, creator, query, authLevels)
 	ginx.Dangerous(err)
 
-	list, err := models.TaskRecordGets(rt.Ctx, []int64{bgid}, beginTime, creator, query, limit, ginx.Offset(c, limit))
+	list, err := models.TaskRecordGets(rt.Ctx, []int64{bgid}, beginTime, creator, query, authLevels, limit, ginx.Offset(c, limit))
 	ginx.Dangerous(err)
 
 	ginx.NewRender(c).Data(gin.H{
@@ -40,7 +65,7 @@ func (rt *Router) taskGets(c *gin.Context) {
 }
 
 func (rt *Router) taskGetsByGids(c *gin.Context) {
-	gids := str.IdsInt64(ginx.QueryStr(c, "gids", ""), ",")
+	gids := strx.IdsInt64ForAPI(ginx.QueryStr(c, "gids", ""), ",")
 	if len(gids) > 0 {
 		for _, gid := range gids {
 			rt.bgroCheck(c, gid)
@@ -63,6 +88,7 @@ func (rt *Router) taskGetsByGids(c *gin.Context) {
 	days := ginx.QueryInt64(c, "days", 7)
 	limit := ginx.QueryInt(c, "limit", 20)
 	query := ginx.QueryStr(c, "query", "")
+	authLevels := parseAuthLevels(ginx.QueryStr(c, "auth_level", ""))
 	user := c.MustGet("user").(*models.User)
 
 	creator := ""
@@ -72,30 +98,16 @@ func (rt *Router) taskGetsByGids(c *gin.Context) {
 
 	beginTime := time.Now().Unix() - days*24*3600
 
-	total, err := models.TaskRecordTotal(rt.Ctx, gids, beginTime, creator, query)
+	total, err := models.TaskRecordTotal(rt.Ctx, gids, beginTime, creator, query, authLevels)
 	ginx.Dangerous(err)
 
-	list, err := models.TaskRecordGets(rt.Ctx, gids, beginTime, creator, query, limit, ginx.Offset(c, limit))
+	list, err := models.TaskRecordGets(rt.Ctx, gids, beginTime, creator, query, authLevels, limit, ginx.Offset(c, limit))
 	ginx.Dangerous(err)
 
 	ginx.NewRender(c).Data(gin.H{
 		"total": total,
 		"list":  list,
 	}, nil)
-}
-
-type taskForm struct {
-	Title     string   `json:"title" binding:"required"`
-	Account   string   `json:"account" binding:"required"`
-	Batch     int      `json:"batch"`
-	Tolerance int      `json:"tolerance"`
-	Timeout   int      `json:"timeout"`
-	Pause     string   `json:"pause"`
-	Script    string   `json:"script" binding:"required"`
-	Args      string   `json:"args"`
-	Action    string   `json:"action" binding:"required"`
-	Creator   string   `json:"creator"`
-	Hosts     []string `json:"hosts" binding:"required"`
 }
 
 func (rt *Router) taskRecordAdd(c *gin.Context) {
@@ -105,28 +117,48 @@ func (rt *Router) taskRecordAdd(c *gin.Context) {
 }
 
 func (rt *Router) taskAdd(c *gin.Context) {
-	if !rt.Ibex.Enable {
-		ginx.Bomb(400, i18n.Sprintf(c.GetHeader("X-Language"), "This functionality has not been enabled. Please contact the system administrator to activate it."))
-		return
-	}
-
 	var f models.TaskForm
 	ginx.BindJSON(c, &f)
+
+	taskId, err := TaskAdd(rt.Ctx, c, rt.Ibex.Enable, f)
+	ginx.NewRender(c).Data(taskId, err)
+}
+
+func TaskAdd(ctx *ctx.Context, c *gin.Context, ibexEnable bool, f models.TaskForm) (int64, error) {
+	if !ibexEnable {
+		return 0, errors.New("This functionality has not been enabled. Please contact the system administrator to activate it.")
+	}
+
+	// 把 f.Hosts 中的空字符串过滤掉
+	hosts := make([]string, 0, len(f.Hosts))
+	for i := range f.Hosts {
+		if strings.TrimSpace(f.Hosts[i]) != "" {
+			hosts = append(hosts, strings.TrimSpace(f.Hosts[i]))
+		}
+	}
+	f.Hosts = hosts
 
 	bgid := ginx.UrlParamInt64(c, "id")
 	user := c.MustGet("user").(*models.User)
 	f.Creator = user.Username
 
-	err := f.Verify()
-	ginx.Dangerous(err)
+	err := CheckTargetsExistByIndent(ctx, f.Hosts)
+	if err != nil {
+		return 0, err
+	}
+
+	err = f.Verify()
+	if err != nil {
+		return 0, err
+	}
 
 	f.HandleFH(f.Hosts[0])
 
 	// check permission
-	rt.checkTargetPerm(c, f.Hosts)
+	CheckTargetPerm(ctx, c, f.Hosts)
 
 	// call ibex
-	taskId, err := sender.TaskAdd(f, user.Username, rt.Ctx.IsCenter)
+	taskId, err := sender.TaskAdd(f, user.Username, ctx.IsCenter)
 	ginx.Dangerous(err)
 
 	if taskId <= 0 {
@@ -135,20 +167,22 @@ func (rt *Router) taskAdd(c *gin.Context) {
 
 	// write db
 	record := models.TaskRecord{
-		Id:        taskId,
-		GroupId:   bgid,
-		Title:     f.Title,
-		Account:   f.Account,
-		Batch:     f.Batch,
-		Tolerance: f.Tolerance,
-		Timeout:   f.Timeout,
-		Pause:     f.Pause,
-		Script:    f.Script,
-		Args:      f.Args,
-		CreateAt:  time.Now().Unix(),
-		CreateBy:  f.Creator,
+		Id:           taskId,
+		GroupId:      bgid,
+		Title:        f.Title,
+		Account:      f.Account,
+		Batch:        f.Batch,
+		Tolerance:    f.Tolerance,
+		Timeout:      f.Timeout,
+		Pause:        f.Pause,
+		Script:       f.Script,
+		Args:         f.Args,
+		SystemCaller: f.SystemCaller,
+		AuthLevel:    f.AuthLevel,
+		CreateAt:     time.Now().Unix(),
+		CreateBy:     f.Creator,
 	}
 
-	err = record.Add(rt.Ctx)
-	ginx.NewRender(c).Data(taskId, err)
+	err = record.Add(ctx)
+	return taskId, err
 }

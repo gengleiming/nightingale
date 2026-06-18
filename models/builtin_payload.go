@@ -10,7 +10,7 @@ import (
 
 type BuiltinPayload struct {
 	ID          int64  `json:"id" gorm:"primaryKey;type:bigint;autoIncrement;comment:'unique identifier'"`
-	Type        string `json:"type" gorm:"type:varchar(191);not null;index:idx_type,sort:asc;comment:'type of payload'"`                // Alert Dashboard Collet
+	Type        string `json:"type" gorm:"type:varchar(191);not null;index:idx_type,sort:asc;comment:'type of payload'"`                // Alert Dashboard Collect
 	Component   string `json:"component" gorm:"type:varchar(191);not null;index:idx_component,sort:asc;comment:'component of payload'"` //
 	ComponentID uint64 `json:"component_id" gorm:"type:bigint;index:idx_component,sort:asc;comment:'component_id of payload'"`          // ComponentID which the payload belongs to
 	Cate        string `json:"cate" gorm:"type:varchar(191);not null;comment:'category of payload'"`                                    // categraf_v1 telegraf_v1
@@ -18,6 +18,7 @@ type BuiltinPayload struct {
 	Tags        string `json:"tags" gorm:"type:varchar(191);not null;default:'';comment:'tags of payload'"`                             // {"host":"
 	Content     string `json:"content" gorm:"type:longtext;not null;comment:'content of payload'"`
 	UUID        int64  `json:"uuid" gorm:"type:bigint;not null;index:idx_uuid;comment:'uuid of payload'"`
+	Note        string `json:"note" gorm:"type:varchar(1024);not null;default:'';comment:'note of payload'"`
 	CreatedAt   int64  `json:"created_at" gorm:"type:bigint;not null;default:0;comment:'create time'"`
 	CreatedBy   string `json:"created_by" gorm:"type:varchar(191);not null;default:'';comment:'creator'"`
 	UpdatedAt   int64  `json:"updated_at" gorm:"type:bigint;not null;default:0;comment:'update time'"`
@@ -25,6 +26,27 @@ type BuiltinPayload struct {
 }
 
 func (bp *BuiltinPayload) TableName() string {
+	return "builtin_payloads"
+}
+
+type PostgresBuiltinPayload struct {
+	ID          int64  `json:"id" gorm:"primaryKey;type:bigint;autoIncrement;comment:'unique identifier'"`
+	Type        string `json:"type" gorm:"type:varchar(191);not null;index:idx_type,sort:asc;comment:'type of payload'"`
+	Component   string `json:"component" gorm:"type:varchar(191);not null;index:idx_component,sort:asc;comment:'component of payload'"`
+	ComponentID uint64 `json:"component_id" gorm:"type:bigint;index:idx_component,sort:asc;comment:'component_id of payload'"`
+	Cate        string `json:"cate" gorm:"type:varchar(191);not null;comment:'category of payload'"`
+	Name        string `json:"name" gorm:"type:varchar(191);not null;index:idx_buildinpayload_name,sort:asc;comment:'name of payload'"`
+	Tags        string `json:"tags" gorm:"type:varchar(191);not null;default:'';comment:'tags of payload'"`
+	Content     string `json:"content" gorm:"type:text;not null;comment:'content of payload'"`
+	UUID        int64  `json:"uuid" gorm:"type:bigint;not null;index:idx_uuid;comment:'uuid of payload'"`
+	Note        string `json:"note" gorm:"type:varchar(1024);not null;default:'';comment:'note of payload'"`
+	CreatedAt   int64  `json:"created_at" gorm:"type:bigint;not null;default:0;comment:'create time'"`
+	CreatedBy   string `json:"created_by" gorm:"type:varchar(191);not null;default:'';comment:'creator'"`
+	UpdatedAt   int64  `json:"updated_at" gorm:"type:bigint;not null;default:0;comment:'update time'"`
+	UpdatedBy   string `json:"updated_by" gorm:"type:varchar(191);not null;default:'';comment:'updater'"`
+}
+
+func (bp *PostgresBuiltinPayload) TableName() string {
 	return "builtin_payloads"
 }
 
@@ -118,7 +140,7 @@ func BuiltinPayloadGet(ctx *ctx.Context, where string, args ...interface{}) (*Bu
 }
 
 func BuiltinPayloadGets(ctx *ctx.Context, componentId uint64, typ, cate, query string) ([]*BuiltinPayload, error) {
-	session := DB(ctx)
+	session := DB(ctx).Where("updated_by != ?", SYSTEM)
 	if typ != "" {
 		session = session.Where("type = ?", typ)
 	}
@@ -146,7 +168,7 @@ func BuiltinPayloadGets(ctx *ctx.Context, componentId uint64, typ, cate, query s
 // get cates of BuiltinPayload by type and component, return []string
 func BuiltinPayloadCates(ctx *ctx.Context, typ string, componentID uint64) ([]string, error) {
 	var cates []string
-	err := DB(ctx).Model(new(BuiltinPayload)).Where("type = ? and component_id = ?", typ, componentID).Distinct("cate").Pluck("cate", &cates).Error
+	err := DB(ctx).Model(new(BuiltinPayload)).Where("type = ? and component_id = ? and updated_by != ?", typ, componentID, SYSTEM).Distinct("cate").Pluck("cate", &cates).Error
 	return cates, err
 }
 

@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/ccfos/nightingale/v6/dscache"
-
 	"github.com/ccfos/nightingale/v6/alert"
 	"github.com/ccfos/nightingale/v6/alert/astats"
 	"github.com/ccfos/nightingale/v6/alert/dispatch"
@@ -14,6 +12,7 @@ import (
 	alertrt "github.com/ccfos/nightingale/v6/alert/router"
 	"github.com/ccfos/nightingale/v6/center/metas"
 	"github.com/ccfos/nightingale/v6/conf"
+	"github.com/ccfos/nightingale/v6/dscache"
 	"github.com/ccfos/nightingale/v6/dumper"
 	"github.com/ccfos/nightingale/v6/memsto"
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
@@ -55,7 +54,7 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 	targetCache := memsto.NewTargetCache(ctx, syncStats, redis)
 	busiGroupCache := memsto.NewBusiGroupCache(ctx, syncStats)
 	configCvalCache := memsto.NewCvalCache(ctx, syncStats)
-	idents := idents.New(ctx, redis)
+	idents := idents.New(ctx, redis, config.Pushgw)
 	metas := metas.New(redis)
 	writers := writer.NewWriters(config.Pushgw)
 	pushgwRouter := pushgwrt.New(config.HTTP, config.Pushgw, config.Alert, targetCache, busiGroupCache, idents, metas, writers, ctx)
@@ -63,7 +62,7 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 
 	pushgwRouter.Config(r)
 	macros.RegisterMacro(macros.MacroInVain)
-	dscache.Init(ctx, false)
+	dscache.Init(ctx, false, config.Alert.Heartbeat.EngineName)
 
 	if !config.Alert.Disable {
 		configCache := memsto.NewConfigCache(ctx, syncStats, nil, "")
@@ -75,6 +74,9 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 		userCache := memsto.NewUserCache(ctx, syncStats)
 		userGroupCache := memsto.NewUserGroupCache(ctx, syncStats)
 		taskTplsCache := memsto.NewTaskTplCache(ctx)
+		notifyRuleCache := memsto.NewNotifyRuleCache(ctx, syncStats)
+		notifyChannelCache := memsto.NewNotifyChannelCache(ctx, syncStats)
+		messageTemplateCache := memsto.NewMessageTemplateCache(ctx, syncStats)
 
 		promClients := prom.NewPromClient(ctx)
 
@@ -83,9 +85,9 @@ func Initialize(configDir string, cryptoKey string) (func(), error) {
 		externalProcessors := process.NewExternalProcessors()
 
 		alert.Start(config.Alert, config.Pushgw, syncStats, alertStats, externalProcessors, targetCache, busiGroupCache, alertMuteCache,
-			alertRuleCache, notifyConfigCache, taskTplsCache, dsCache, ctx, promClients, userCache, userGroupCache)
+			alertRuleCache, notifyConfigCache, taskTplsCache, dsCache, ctx, promClients, userCache, userGroupCache, notifyRuleCache, notifyChannelCache, messageTemplateCache, configCvalCache)
 
-		alertrtRouter := alertrt.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors)
+		alertrtRouter := alertrt.New(config.HTTP, config.Alert, alertMuteCache, targetCache, busiGroupCache, alertStats, ctx, externalProcessors, config.Log.Dir)
 
 		alertrtRouter.Config(r)
 

@@ -141,7 +141,7 @@ func updateSmtp(ctx *ctx.Context, ncc *memsto.NotifyConfigCacheType) {
 func startEmailSender(ctx *ctx.Context, smtp aconf.SMTPConfig) {
 	conf := smtp
 	if conf.Host == "" || conf.Port == 0 {
-		logger.Warning("SMTP configurations invalid")
+		logger.Debug("SMTP configurations invalid")
 		<-mailQuit
 		return
 	}
@@ -205,7 +205,7 @@ func startEmailSender(ctx *ctx.Context, smtp aconf.SMTPConfig) {
 				if err == nil {
 					msg = "ok"
 				}
-				NotifyRecord(ctx, m.events, models.Email, to, msg, err)
+				NotifyRecord(ctx, m.events, 0, models.Email, to, msg, err)
 			}
 
 			size++

@@ -53,6 +53,12 @@ func (d *DataResp) MetricName() string {
 	return string(metric)
 }
 
+// labels 转换为 string
+func (d *DataResp) LabelsString() string {
+	labels := d.Metric
+	return labels.String()
+}
+
 type RelationKey struct {
 	LeftKey  string `json:"left_key"`
 	RightKey string `json:"right_key"`
@@ -62,10 +68,10 @@ type RelationKey struct {
 type QueryParam struct {
 	Cate         string        `json:"cate"`
 	DatasourceId int64         `json:"datasource_id"`
-	Querys       []interface{} `json:"query"`
+	Queries      []interface{} `json:"query"`
 }
 
 type Series struct {
-	SeriesStore map[uint64]DataResp            `josn:"store"`
+	SeriesStore map[uint64]DataResp            `json:"store"`
 	SeriesIndex map[string]map[uint64]struct{} `json:"index"`
 }

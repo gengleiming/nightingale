@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/ccfos/nightingale/v6/models"
+	"github.com/ccfos/nightingale/v6/pkg/ginx"
 
 	"github.com/gin-gonic/gin"
-	"github.com/toolkits/pkg/ginx"
 )
 
 func (rt *Router) userVariableConfigGets(context *gin.Context) {
@@ -40,7 +40,7 @@ func (rt *Router) userVariableConfigPut(context *gin.Context) {
 	user := context.MustGet("user").(*models.User)
 	if !user.IsAdmin() && f.CreateBy != user.Username {
 		// only admin or creator can update
-		ginx.Bomb(403, "no permission")
+		ginx.Bomb(403, "forbidden")
 	}
 
 	ginx.NewRender(context).Message(models.ConfigsUserVariableUpdate(rt.Ctx, f))
@@ -54,7 +54,7 @@ func (rt *Router) userVariableConfigDel(context *gin.Context) {
 	user := context.MustGet("user").(*models.User)
 	if !user.IsAdmin() && configs.CreateBy != user.Username {
 		// only admin or creator can delete
-		ginx.Bomb(403, "no permission")
+		ginx.Bomb(403, "forbidden")
 	}
 
 	if configs != nil && configs.External == models.ConfigExternal {

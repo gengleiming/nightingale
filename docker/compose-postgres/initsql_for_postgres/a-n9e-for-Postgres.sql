@@ -204,10 +204,12 @@ CREATE TABLE board (
     public smallint not null default 0 ,
     built_in smallint not null default 0 ,
     hide smallint not null default 0 ,
+    public_cate bigint NOT NULL DEFAULT 0,
     create_at bigint not null default 0,
     create_by varchar(64) not null default '',
     update_at bigint not null default 0,
     update_by varchar(64) not null default '',
+    note varchar(1024) not null default '',
     PRIMARY KEY (id),
     UNIQUE (group_id, name)
 ) ;
@@ -217,6 +219,8 @@ COMMENT ON COLUMN board.tags IS 'split by space';
 COMMENT ON COLUMN board.public IS '0:false 1:true';
 COMMENT ON COLUMN board.built_in IS '0:false 1:true';
 COMMENT ON COLUMN board.hide IS '0:false 1:true';
+COMMENT ON COLUMN board.public_cate IS '0 anonymous 1 login 2 busi';
+COMMENT ON COLUMN board.note IS 'note';
 
 
 -- for dashboard new version
@@ -317,6 +321,7 @@ CREATE TABLE alert_rule (
     create_by varchar(64) not null default '',
     update_at bigint not null default 0,
     update_by varchar(64) not null default '',
+    time_zone varchar(64) not null default '',
     PRIMARY KEY (id)
 ) ;
 CREATE INDEX alert_rule_group_id_idx ON alert_rule (group_id);
@@ -429,43 +434,31 @@ CREATE TABLE target (
     ident varchar(191) not null,
     note varchar(255) not null default '',
     tags varchar(512) not null default '',
+    host_tags text,
     host_ip varchar(15) default '',
     agent_version varchar(255) default '',
     engine_name varchar(255) default '',
+    os varchar(31) default '',
     update_at bigint not null default 0,
     PRIMARY KEY (id),
     UNIQUE (ident)
 );
 
 CREATE INDEX ON target (group_id);
+CREATE INDEX idx_host_ip ON target (host_ip);
+CREATE INDEX idx_agent_version ON target (agent_version);
+CREATE INDEX idx_engine_name ON target (engine_name);
+CREATE INDEX idx_os ON target (os);
 
 COMMENT ON COLUMN target.group_id IS 'busi group id';
 COMMENT ON COLUMN target.ident IS 'target id';
 COMMENT ON COLUMN target.note IS 'append to alert event as field';
 COMMENT ON COLUMN target.tags IS 'append to series data as tags, split by space, append external space at suffix';
+COMMENT ON COLUMN target.host_tags IS 'global labels set in conf file';
 COMMENT ON COLUMN target.host_ip IS 'IPv4 string';
 COMMENT ON COLUMN target.agent_version IS 'agent version';
 COMMENT ON COLUMN target.engine_name IS 'engine_name';
--- case1: target_idents; case2: target_tags
--- CREATE TABLE collect_rule (
---     id bigserial,
---     group_id bigint not null default 0 comment 'busi group id',
---     cluster varchar(128) not null,
---     target_idents varchar(512) not null default '' comment 'ident list, split by space',
---     target_tags varchar(512) not null default '' comment 'filter targets by tags, split by space',
---     name varchar(191) not null default '',
---     note varchar(255) not null default '',
---     step int not null,
---     type varchar(64) not null comment 'e.g. port proc log plugin',
---     data text not null,
---     append_tags varchar(255) not null default '' comment 'split by space: e.g. mod=n9e dept=cloud',
---     create_at bigint not null default 0,
---     create_by varchar(64) not null default '',
---     update_at bigint not null default 0,
---     update_by varchar(64) not null default '',
---     PRIMARY KEY (id),
---     KEY (group_id, type, name)
--- ) ;
+COMMENT ON COLUMN target.os IS 'os type';
 
 CREATE TABLE metric_view (
     id bigserial,
@@ -734,6 +727,7 @@ CREATE TABLE datasource
 (
     id serial,
     name varchar(191) not null default '',
+    identifier varchar(255) not null default '',
     description varchar(255) not null default '',
     category varchar(255) not null default '',
     plugin_id int  not null default 0,
@@ -745,14 +739,15 @@ CREATE TABLE datasource
     http varchar(4096) not null default '',
     auth varchar(8192) not null default '',
     is_default boolean not null default false,
+    weight int not null default 0,
     created_at bigint not null default 0,
     created_by varchar(64) not null default '',
     updated_at bigint not null default 0,
     updated_by varchar(64) not null default '',
     UNIQUE (name),
     PRIMARY KEY (id)
-) ; 
-  
+) ;
+
 CREATE TABLE builtin_cate (
     id bigserial,
     name varchar(191) not null,
@@ -795,10 +790,12 @@ CREATE TABLE es_index_pattern (
     create_by varchar(64) default '',
     update_at bigint default '0',
     update_by varchar(64) default '',
+    note varchar(4096) not null default '',
     PRIMARY KEY (id),
     UNIQUE (datasource_id, name)
 ) ;
 COMMENT ON COLUMN es_index_pattern.datasource_id IS 'datasource id';
+COMMENT ON COLUMN es_index_pattern.note IS 'description of metric in Chinese';
 
 CREATE TABLE builtin_metrics (
   id bigserial,
@@ -809,10 +806,14 @@ CREATE TABLE builtin_metrics (
   lang varchar(191) NOT NULL DEFAULT '',
   note varchar(4096) NOT NULL,
   expression varchar(4096) NOT NULL,
+  expression_type varchar(32) NOT NULL DEFAULT 'promql',
+  metric_type varchar(191) NOT NULL DEFAULT '',
+  extra_fields text,
   created_at bigint NOT NULL DEFAULT 0,
   created_by varchar(191) NOT NULL DEFAULT '',
   updated_at bigint NOT NULL DEFAULT 0,
   updated_by varchar(191) NOT NULL DEFAULT '',
+  uuid BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (id),
   UNIQUE (lang, collector, typ, name)
 );
@@ -830,10 +831,14 @@ COMMENT ON COLUMN builtin_metrics.unit IS 'unit of metric';
 COMMENT ON COLUMN builtin_metrics.lang IS 'language of metric';
 COMMENT ON COLUMN builtin_metrics.note IS 'description of metric in Chinese';
 COMMENT ON COLUMN builtin_metrics.expression IS 'expression of metric';
+COMMENT ON COLUMN builtin_metrics.expression_type IS 'expression type: metric_name or promql';
+COMMENT ON COLUMN builtin_metrics.metric_type IS 'metric type like counter/gauge';
+COMMENT ON COLUMN builtin_metrics.extra_fields IS 'custom extra fields';
 COMMENT ON COLUMN builtin_metrics.created_at IS 'create time';
 COMMENT ON COLUMN builtin_metrics.created_by IS 'creator';
 COMMENT ON COLUMN builtin_metrics.updated_at IS 'update time';
 COMMENT ON COLUMN builtin_metrics.updated_by IS 'updater';
+COMMENT ON COLUMN builtin_metrics.uuid IS 'unique identifier';
 
 CREATE TABLE metric_filter (
   id BIGSERIAL PRIMARY KEY,
@@ -878,6 +883,7 @@ CREATE TABLE builtin_payloads (
   name VARCHAR(191) NOT NULL,
   tags VARCHAR(191) NOT NULL DEFAULT '',
   content TEXT NOT NULL,
+  note VARCHAR(1024) NOT NULL DEFAULT '',
   created_at BIGINT NOT NULL DEFAULT 0,
   created_by VARCHAR(191) NOT NULL DEFAULT '',
   updated_at BIGINT NOT NULL DEFAULT 0,
@@ -903,4 +909,130 @@ CREATE TABLE dash_annotation (
     create_by varchar(64) not null default '',
     update_at bigint not null default 0,
     update_by varchar(64) not null default ''
+);
+
+CREATE TABLE source_token (
+    id bigserial PRIMARY KEY,
+    source_type varchar(64) NOT NULL DEFAULT '',
+    source_id varchar(255) NOT NULL DEFAULT '',
+    token varchar(255) NOT NULL DEFAULT '',
+    expire_at bigint NOT NULL DEFAULT 0,
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_source_token_type_id_token ON source_token (source_type, source_id, token);
+
+CREATE TABLE notification_record (
+    id BIGSERIAL PRIMARY KEY,
+    notify_rule_id BIGINT NOT NULL DEFAULT 0,
+    event_id bigint NOT NULL,
+    sub_id bigint DEFAULT NULL,
+    channel varchar(255) NOT NULL,
+    status bigint DEFAULT NULL,
+    target varchar(1024) NOT NULL,
+    details varchar(2048) DEFAULT '',
+    created_at bigint NOT NULL
+);
+
+CREATE INDEX idx_evt ON notification_record (event_id);
+
+COMMENT ON COLUMN notification_record.event_id IS 'event history id';
+COMMENT ON COLUMN notification_record.sub_id IS 'subscribed rule id';
+COMMENT ON COLUMN notification_record.channel IS 'notification channel name';
+COMMENT ON COLUMN notification_record.status IS 'notification status';
+COMMENT ON COLUMN notification_record.target IS 'notification target';
+COMMENT ON COLUMN notification_record.details IS 'notification other info';
+COMMENT ON COLUMN notification_record.created_at IS 'create time';
+
+CREATE TABLE target_busi_group (
+    id BIGSERIAL PRIMARY KEY,
+    target_ident varchar(191) NOT NULL,
+    group_id bigint NOT NULL,
+    update_at bigint NOT NULL
+);
+
+CREATE UNIQUE INDEX idx_target_group ON target_busi_group (target_ident, group_id);
+
+CREATE TABLE user_token (
+    id BIGSERIAL PRIMARY KEY,
+    username varchar(255) NOT NULL DEFAULT '',
+    token_name varchar(255) NOT NULL DEFAULT '',
+    token varchar(255) NOT NULL DEFAULT '',
+    create_at bigint NOT NULL DEFAULT 0,
+    last_used bigint NOT NULL DEFAULT 0
+);
+
+CREATE TABLE notify_rule (
+    id bigserial PRIMARY KEY,
+    name varchar(255) NOT NULL,
+    description text,
+    enable boolean DEFAULT false,
+    user_group_ids varchar(255) NOT NULL DEFAULT '',
+    notify_configs text,
+    pipeline_configs text,
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT '',
+    update_at bigint NOT NULL DEFAULT 0,
+    update_by varchar(64) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE notify_channel (
+    id bigserial PRIMARY KEY,
+    name varchar(255) NOT NULL,
+    ident varchar(255) NOT NULL,
+    description text,
+    enable boolean DEFAULT false,
+    param_config text,
+    request_type varchar(50) NOT NULL,
+    request_config text,
+    weight int NOT NULL DEFAULT 0,
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT '',
+    update_at bigint NOT NULL DEFAULT 0,
+    update_by varchar(64) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE message_template (
+    id bigserial PRIMARY KEY,
+    name varchar(64) NOT NULL,
+    ident varchar(64) NOT NULL,
+    content text,
+    user_group_ids varchar(64),
+    notify_channel_ident varchar(64) NOT NULL DEFAULT '',
+    private int NOT NULL DEFAULT 0,
+    weight int NOT NULL DEFAULT 0,
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT '',
+    update_at bigint NOT NULL DEFAULT 0,
+    update_by varchar(64) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE event_pipeline (
+    id bigserial PRIMARY KEY,
+    name varchar(128) NOT NULL,
+    team_ids text,
+    description varchar(255) NOT NULL DEFAULT '',
+    filter_enable smallint NOT NULL DEFAULT 0,
+    label_filters text,
+    attribute_filters text,
+    processors text,
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT '',
+    update_at bigint NOT NULL DEFAULT 0,
+    update_by varchar(64) NOT NULL DEFAULT ''
+);
+
+CREATE TABLE embedded_product (
+    id bigserial PRIMARY KEY,
+    name varchar(255) DEFAULT NULL,
+    url varchar(255) DEFAULT NULL,
+    is_private boolean DEFAULT NULL,
+    hide boolean NOT NULL DEFAULT false,
+    team_ids varchar(255),
+    create_at bigint NOT NULL DEFAULT 0,
+    create_by varchar(64) NOT NULL DEFAULT '',
+    update_at bigint NOT NULL DEFAULT 0,
+    update_by varchar(64) NOT NULL DEFAULT '',
+    weight int NOT NULL DEFAULT 0
 );

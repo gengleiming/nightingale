@@ -10,6 +10,7 @@
 *.a
 *.so
 *.db
+*.db*
 *.sw[po]
 *.tar.gz
 *.[568vq]
@@ -58,12 +59,25 @@ _test
 .idea
 .index
 .vscode
+.issue
+.issue/*
+.cursor
+.claude
 .DS_Store
 .cache-loader
 .payload
 queries.active
+.playwright-mcp
 
 /n9e-*
 n9e.sql
 
+# Runtime skill directory: built-in skills are extracted from embed at startup,
+# DB-synced user skills land here too. Source of truth is aiagent/skill/embedded/builtin/.
+/skill
+
 !/datasource
+
+.env.json
+/aichat-cli
+/a2a-cli

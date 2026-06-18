@@ -3,7 +3,7 @@
         "id": 0,
         "uuid": 1717556327385727000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health delayed unassigned 的分片数",
         "unit": "sishort",
         "note": "",
@@ -12,13 +12,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health delayed unassigned 的分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of Cluster Health delayed unassigned shards",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327389271000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health Pending task 数量",
         "unit": "none",
         "note": "",
@@ -27,13 +39,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health Pending task 数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Cluster Health Pending tasks quantity",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327391502000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health relocating 的分片数",
         "unit": "sishort",
         "note": "",
@@ -42,13 +66,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health relocating 的分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of shards for Cluster Health relocating",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327393576000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health unassigned 的分片数",
         "unit": "sishort",
         "note": "",
@@ -57,13 +93,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health unassigned 的分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Cluster Health unassigned number of shards",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327396682000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 健康度状态码",
         "unit": "none",
         "note": "- 1：Green，绿色状态，表示所有分片都正常\n- 2：Yellow，黄色状态，主分片都正常，从分片有不正常的\n- 3：Red，红色状态，有些主分片不正常",
@@ -72,13 +120,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 健康度状态码",
+                "note": "- 1：Green，绿色状态，表示所有分片都正常\n- 2：Yellow，黄色状态，主分片都正常，从分片有不正常的\n- 3：Red，红色状态，有些主分片不正常"
+            },
+            {
+                "lang": "en_US",
+                "name": "Cluster Health health status code",
+                "note": "-1: Green, Green state, indicating that all shards are normal \n-2: Yellow, Yellow state, the main shard is normal, the slave shard is abnormal \n-3: Red, Red state, some main shards are abnormal"
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327398665000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 数据节点数量",
         "unit": "none",
         "note": "",
@@ -87,13 +147,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 数据节点数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of Cluster Health data nodes",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327400525000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 正在初始化的分片数",
         "unit": "sishort",
         "note": "",
@@ -102,13 +174,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 正在初始化的分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of shards being initialized by Cluster Health",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327402553000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 活跃主分片数",
         "unit": "sishort",
         "note": "",
@@ -117,13 +201,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 活跃主分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Cluster Health Number of active primary shards",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327404570000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 活跃分片数",
         "unit": "sishort",
         "note": "",
@@ -132,13 +228,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 活跃分片数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Cluster Health Active Shards",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327406404000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Cluster Health 节点数量",
         "unit": "none",
         "note": "",
@@ -147,13 +255,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Cluster Health 节点数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of Cluster Health nodes",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327408587000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Indexing 平均耗时",
         "unit": "milliseconds",
         "note": "",
@@ -162,13 +282,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Indexing 平均耗时",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Indexing average time consumption",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327410419000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Merge 平均耗时",
         "unit": "milliseconds",
         "note": "",
@@ -177,13 +309,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Merge 平均耗时",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Average time consumed by Merge",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327413133000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "Query 平均耗时",
         "unit": "milliseconds",
         "note": "",
@@ -192,13 +336,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "Query 平均耗时",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Query average time consumption",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327415242000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "每秒 indexing 数量",
         "unit": "sishort",
         "note": "",
@@ -207,13 +363,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "每秒 indexing 数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "indexing per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327417739000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "每秒 merge 大小",
         "unit": "bytesSecIEC",
         "note": "",
@@ -222,13 +390,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "每秒 merge 大小",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "merge size per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327419933000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "每秒 merge 数量",
         "unit": "sishort",
         "note": "",
@@ -237,13 +417,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "每秒 merge 数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of merges per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327421867000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "每秒删除 doc 数量",
         "unit": "sishort",
         "note": "",
@@ -252,13 +444,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "每秒删除 doc 数量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of docs deleted per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327424001000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "硬盘使用率",
         "unit": "percent",
         "note": "",
@@ -267,13 +471,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "硬盘使用率",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Hard Drive Usage",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327425727000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "网络流量 - 入向每秒流量",
         "unit": "bytesSecIEC",
         "note": "",
@@ -282,13 +498,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "网络流量 - 入向每秒流量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Network traffic-inbound traffic per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327428683000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "网络流量 - 出向每秒流量",
         "unit": "bytesSecIEC",
         "note": "",
@@ -297,13 +525,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "网络流量 - 出向每秒流量",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Network traffic-outbound traffic per second",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327434651000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 CPU 使用率",
         "unit": "percent",
         "note": "",
@@ -312,13 +552,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 CPU 使用率",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process CPU usage",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327437231000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 JVM Heap 使用率",
         "unit": "percent",
         "note": "",
@@ -327,13 +579,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 JVM Heap 使用率",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process JVM Heap Usage",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327439234000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 JVM Heap 区 committed 大小",
         "unit": "bytesIEC",
         "note": "",
@@ -342,13 +606,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 JVM Heap 区 committed 大小",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process JVM Heap area committed size",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327441202000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 JVM Non Heap 区 committed 大小",
         "unit": "bytesIEC",
         "note": "",
@@ -357,13 +633,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 JVM Non Heap 区 committed 大小",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process JVM Non Heap area committed size",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327443058000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 JVM Old 内存池 used 大小",
         "unit": "bytesIEC",
         "note": "",
@@ -372,13 +660,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 JVM Old 内存池 used 大小",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process JVM Old memory pool used size",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327444862000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程 JVM Young 内存池 used 大小",
         "unit": "bytesIEC",
         "note": "",
@@ -387,13 +687,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程 JVM Young 内存池 used 大小",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process JVM Young memory pool used size",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327447174000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程新生代每秒 GC 次数",
         "unit": "none",
         "note": "",
@@ -402,13 +714,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程新生代每秒 GC 次数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of GCs per second for the new generation of the process",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327449234000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程新生代每秒 GC 耗时",
         "unit": "milliseconds",
         "note": "",
@@ -417,13 +741,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程新生代每秒 GC 耗时",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process new generation time per second GC",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327451371000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程老生代每秒 GC 次数",
         "unit": "none",
         "note": "",
@@ -432,13 +768,25 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程老生代每秒 GC 次数",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Number of GCs per second of process old generation",
+                "note": ""
+            }
+        ]
     },
     {
         "id": 0,
         "uuid": 1717556327459172000,
         "collector": "Categraf",
-        "typ": "ElasticSearch",
+        "typ": "Elasticsearch",
         "name": "进程老生代每秒 GC 耗时",
         "unit": "milliseconds",
         "note": "",
@@ -447,6 +795,18 @@
         "created_at": 0,
         "created_by": "",
         "updated_at": 0,
-        "updated_by": ""
+        "updated_by": "",
+        "translation": [
+            {
+                "lang": "zh_CN",
+                "name": "进程老生代每秒 GC 耗时",
+                "note": ""
+            },
+            {
+                "lang": "en_US",
+                "name": "Process old generation GC time per second",
+                "note": ""
+            }
+        ]
     }
 ]

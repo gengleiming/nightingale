@@ -8,6 +8,8 @@ import (
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
 )
 
+const SYSTEM = "system"
+
 // BuiltinComponent represents a builtin component along with its metadata.
 type BuiltinComponent struct {
 	ID        uint64 `json:"id" gorm:"primaryKey;type:bigint;autoIncrement;comment:'unique identifier'"`
@@ -74,6 +76,7 @@ func (bc *BuiltinComponent) Add(ctx *ctx.Context, username string) error {
 	bc.CreatedAt = now
 	bc.UpdatedAt = now
 	bc.CreatedBy = username
+	bc.UpdatedBy = username
 	return Insert(ctx, bc)
 }
 
@@ -115,7 +118,7 @@ func BuiltinComponentGets(ctx *ctx.Context, query string, disabled int) ([]*Buil
 
 	var lst []*BuiltinComponent
 
-	err := session.Order("ident ASC").Find(&lst).Error
+	err := session.Order("disabled ASC, updated_at DESC, ident ASC").Find(&lst).Error
 
 	return lst, err
 }

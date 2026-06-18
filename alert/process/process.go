@@ -14,20 +14,17 @@ import (
 	"github.com/ccfos/nightingale/v6/alert/common"
 	"github.com/ccfos/nightingale/v6/alert/dispatch"
 	"github.com/ccfos/nightingale/v6/alert/mute"
+	"github.com/ccfos/nightingale/v6/alert/pipeline/processor/relabel"
 	"github.com/ccfos/nightingale/v6/alert/queue"
 	"github.com/ccfos/nightingale/v6/memsto"
 	"github.com/ccfos/nightingale/v6/models"
 	"github.com/ccfos/nightingale/v6/pkg/ctx"
 	"github.com/ccfos/nightingale/v6/pkg/tplx"
-	"github.com/ccfos/nightingale/v6/pushgw/writer"
 
-	"github.com/prometheus/prometheus/prompb"
 	"github.com/robfig/cron/v3"
 	"github.com/toolkits/pkg/logger"
 	"github.com/toolkits/pkg/str"
 )
-
-type EventMuteHookFunc func(event *models.AlertCurEvent) bool
 
 type ExternalProcessorsType struct {
 	ExternalLock sync.RWMutex
@@ -61,11 +58,9 @@ type Processor struct {
 	pendingsUseByRecover *AlertCurEventMap
 	inhibit              bool
 
-	tagsMap    map[string]string
-	tagsArr    []string
-	target     string
-	targetNote string
-	groupName  string
+	tagsMap   map[string]string
+	tagsArr   []string
+	groupName string
 
 	alertRuleCache          *memsto.AlertRuleCacheType
 	TargetCache             *memsto.TargetCacheType
@@ -79,7 +74,6 @@ type Processor struct {
 
 	HandleFireEventHook    HandleEventFunc
 	HandleRecoverEventHook HandleEventFunc
-	EventMuteHook          EventMuteHookFunc
 
 	ScheduleEntry    cron.Entry
 	PromEvalInterval int
@@ -124,7 +118,6 @@ func NewProcessor(engineName string, rule *models.AlertRule, datasourceId int64,
 
 		HandleFireEventHook:    func(event *models.AlertCurEvent) {},
 		HandleRecoverEventHook: func(event *models.AlertCurEvent) {},
-		EventMuteHook:          func(event *models.AlertCurEvent) bool { return false },
 	}
 
 	p.mayHandleGroup()
@@ -138,7 +131,7 @@ func (p *Processor) Handle(anomalyPoints []models.AnomalyPoint, from string, inh
 	p.inhibit = inhibit
 	cachedRule := p.alertRuleCache.Get(p.rule.Id)
 	if cachedRule == nil {
-		logger.Errorf("rule not found %+v", anomalyPoints)
+		logger.Warningf("alert_eval_%d datasource_%d handle error: rule not found, maybe rule has been deleted, anomalyPoints:%+v", p.rule.Id, p.datasourceId, anomalyPoints)
 		p.Stats.CounterRuleEvalErrorTotal.WithLabelValues(fmt.Sprintf("%v", p.DatasourceId()), "handle_event", p.BusiGroupCache.GetNameByBusiGroupId(p.rule.GroupId), fmt.Sprintf("%v", p.rule.Id)).Inc()
 		return
 	}
@@ -154,19 +147,40 @@ func (p *Processor) Handle(anomalyPoints []models.AnomalyPoint, from string, inh
 	eventsMap := make(map[string][]*models.AlertCurEvent)
 	for _, anomalyPoint := range anomalyPoints {
 		event := p.BuildEvent(anomalyPoint, from, now, ruleHash)
+		event.NotifyRuleIds = cachedRule.NotifyRuleIds
 		// 如果 event 被 mute 了,本质也是 fire 的状态,这里无论如何都添加到 alertingKeys 中,防止 fire 的事件自动恢复了
 		hash := event.Hash
 		alertingKeys[hash] = struct{}{}
-		isMuted, detail := mute.IsMuted(cachedRule, event, p.TargetCache, p.alertMuteCache)
-		if isMuted {
-			p.Stats.CounterMuteTotal.WithLabelValues(event.GroupName).Inc()
-			logger.Debugf("rule_eval:%s event:%v is muted, detail:%s", p.Key(), event, detail)
+
+		// event processor
+		eventCopy := event.DeepCopy()
+		event = dispatch.HandleEventPipeline(cachedRule.PipelineConfigs, eventCopy, event, dispatch.EventProcessorCache, p.ctx, cachedRule.Id, "alert_rule")
+		if event == nil {
+			logger.Infof("alert_eval_%d datasource_%d is muted drop by pipeline event:%s", p.rule.Id, p.datasourceId, eventCopy.Hash)
 			continue
 		}
 
-		if p.EventMuteHook(event) {
-			p.Stats.CounterMuteTotal.WithLabelValues(event.GroupName).Inc()
-			logger.Debugf("rule_eval:%s event:%v is muted by hook", p.Key(), event)
+		// event mute
+		isMuted, detail, muteId := mute.IsMuted(cachedRule, event, p.TargetCache, p.alertMuteCache)
+		if isMuted {
+			logger.Infof("alert_eval_%d datasource_%d is muted, detail:%s event:%s", p.rule.Id, p.datasourceId, detail, event.Hash)
+			p.Stats.CounterMuteTotal.WithLabelValues(
+				fmt.Sprintf("%v", event.GroupName),
+				fmt.Sprintf("%v", p.rule.Id),
+				fmt.Sprintf("%v", muteId),
+				fmt.Sprintf("%v", p.datasourceId),
+			).Inc()
+			continue
+		}
+
+		if dispatch.EventMuteHook(event) {
+			logger.Infof("alert_eval_%d datasource_%d is muted by hook event:%s", p.rule.Id, p.datasourceId, event.Hash)
+			p.Stats.CounterMuteTotal.WithLabelValues(
+				fmt.Sprintf("%v", event.GroupName),
+				fmt.Sprintf("%v", p.rule.Id),
+				fmt.Sprintf("%v", 0),
+				fmt.Sprintf("%v", p.datasourceId),
+			).Inc()
 			continue
 		}
 
@@ -185,7 +199,7 @@ func (p *Processor) Handle(anomalyPoints []models.AnomalyPoint, from string, inh
 
 func (p *Processor) BuildEvent(anomalyPoint models.AnomalyPoint, from string, now int64, ruleHash string) *models.AlertCurEvent {
 	p.fillTags(anomalyPoint)
-	p.mayHandleIdent()
+
 	hash := Hash(p.rule.Id, p.datasourceId, anomalyPoint)
 	ds := p.datasourceCache.GetById(p.datasourceId)
 	var dsName string
@@ -205,8 +219,6 @@ func (p *Processor) BuildEvent(anomalyPoint models.AnomalyPoint, from string, no
 	event.DatasourceId = p.datasourceId
 	event.Cluster = dsName
 	event.Hash = hash
-	event.TargetIdent = p.target
-	event.TargetNote = p.targetNote
 	event.TriggerValue = anomalyPoint.ReadableValue()
 	event.TriggerValues = anomalyPoint.Values
 	event.TriggerValuesJson = models.EventTriggerValues{ValuesWithUnit: anomalyPoint.ValuesUnit}
@@ -224,18 +236,18 @@ func (p *Processor) BuildEvent(anomalyPoint models.AnomalyPoint, from string, no
 	event.RecoverConfig = anomalyPoint.RecoverConfig
 	event.RuleHash = ruleHash
 
-	if err := json.Unmarshal([]byte(p.rule.Annotations), &event.AnnotationsJSON); err != nil {
-		event.AnnotationsJSON = make(map[string]string) // 解析失败时使用空 map
-		logger.Warningf("unmarshal annotations json failed: %v, rule: %d", err, p.rule.Id)
+	if anomalyPoint.TriggerType == models.TriggerTypeNodata {
+		event.TriggerValue = "nodata"
+		ruleConfig := models.RuleQuery{}
+		json.Unmarshal([]byte(p.rule.RuleConfig), &ruleConfig)
+		ruleConfig.TriggerType = anomalyPoint.TriggerType
+		b, _ := json.Marshal(ruleConfig)
+		event.RuleConfig = string(b)
 	}
 
-	if p.target != "" {
-		if pt, exist := p.TargetCache.Get(p.target); exist {
-			pt.GroupNames = p.BusiGroupCache.GetNamesByBusiGroupIds(pt.GroupIds)
-			event.Target = pt
-		} else {
-			logger.Infof("Target[ident: %s] doesn't exist in cache.", p.target)
-		}
+	if err := json.Unmarshal([]byte(p.rule.Annotations), &event.AnnotationsJSON); err != nil {
+		event.AnnotationsJSON = make(map[string]string) // 解析失败时使用空 map
+		logger.Warningf("alert_eval_%d datasource_%d unmarshal annotations json failed: %v", p.rule.Id, p.datasourceId, err)
 	}
 
 	if event.TriggerValues != "" && strings.Count(event.TriggerValues, "$") > 1 {
@@ -251,6 +263,19 @@ func (p *Processor) BuildEvent(anomalyPoint models.AnomalyPoint, from string, no
 
 	// 生成事件之后，立马进程 relabel 处理
 	Relabel(p.rule, event)
+
+	// 放到 Relabel(p.rule, event) 下面，为了处理 relabel 之后，标签里才出现 ident 的情况
+	p.mayHandleIdent(event)
+
+	if event.TargetIdent != "" {
+		if pt, exist := p.TargetCache.Get(event.TargetIdent); exist {
+			pt.GroupNames = p.BusiGroupCache.GetNamesByBusiGroupIds(pt.GroupIds)
+			event.Target = pt
+		} else {
+			logger.Infof("alert_eval_%d datasource_%d fill event target error, ident: %s doesn't exist in cache.", p.rule.Id, p.datasourceId, event.TargetIdent)
+		}
+	}
+
 	return event
 }
 
@@ -259,44 +284,15 @@ func Relabel(rule *models.AlertRule, event *models.AlertCurEvent) {
 		return
 	}
 
+	// need to keep the original label
+	event.OriginalTags = event.Tags
+	event.OriginalTagsJSON = event.TagsJSON
+
 	if len(rule.EventRelabelConfig) == 0 {
 		return
 	}
 
-	// need to keep the original label
-	event.OriginalTags = event.Tags
-	event.OriginalTagsJSON = make([]string, len(event.TagsJSON))
-
-	labels := make([]prompb.Label, len(event.TagsJSON))
-	for i, tag := range event.TagsJSON {
-		label := strings.SplitN(tag, "=", 2)
-		event.OriginalTagsJSON[i] = tag
-		labels[i] = prompb.Label{Name: label[0], Value: label[1]}
-	}
-
-	for i := 0; i < len(rule.EventRelabelConfig); i++ {
-		if rule.EventRelabelConfig[i].Replacement == "" {
-			rule.EventRelabelConfig[i].Replacement = "$1"
-		}
-
-		if rule.EventRelabelConfig[i].Separator == "" {
-			rule.EventRelabelConfig[i].Separator = ";"
-		}
-
-		if rule.EventRelabelConfig[i].Regex == "" {
-			rule.EventRelabelConfig[i].Regex = "(.*)"
-		}
-	}
-
-	// relabel process
-	relabels := writer.Process(labels, rule.EventRelabelConfig...)
-	event.TagsJSON = make([]string, len(relabels))
-	event.TagsMap = make(map[string]string, len(relabels))
-	for i, label := range relabels {
-		event.TagsJSON[i] = fmt.Sprintf("%s=%s", label.Name, label.Value)
-		event.TagsMap[label.Name] = label.Value
-	}
-	event.Tags = strings.Join(event.TagsJSON, ",,")
+	relabel.EventRelabel(event, rule.EventRelabelConfig)
 }
 
 func (p *Processor) HandleRecover(alertingKeys map[string]struct{}, now int64, inhibit bool) {
@@ -319,43 +315,17 @@ func (p *Processor) HandleRecover(alertingKeys map[string]struct{}, now int64, i
 
 }
 
+// HandleRecoverEvent 处理需要恢复的事件。
+// 恢复不做抑制合并：每个已 fire 的事件各自独立恢复，保证 fire/recover 对称。
+// inhibit 形参保留以兼容调用方签名，恢复阶段不再使用。
 func (p *Processor) HandleRecoverEvent(hashArr []string, now int64, inhibit bool) {
 	cachedRule := p.rule
 	if cachedRule == nil {
 		return
 	}
 
-	if !inhibit {
-		for _, hash := range hashArr {
-			p.RecoverSingle(false, hash, now, nil)
-		}
-		return
-	}
-
-	eventMap := make(map[string]models.AlertCurEvent)
 	for _, hash := range hashArr {
-		event, has := p.fires.Get(hash)
-		if !has {
-			continue
-		}
-
-		e, exists := eventMap[event.Tags]
-		if !exists {
-			eventMap[event.Tags] = *event
-			continue
-		}
-
-		if e.Severity > event.Severity {
-			// hash 对应的恢复事件的被抑制了，把之前的事件删除
-			p.fires.Delete(e.Hash)
-			p.pendings.Delete(e.Hash)
-			models.AlertCurEventDelByHash(p.ctx, e.Hash)
-			eventMap[event.Tags] = *event
-		}
-	}
-
-	for _, event := range eventMap {
-		p.RecoverSingle(false, event.Hash, now, nil)
+		p.RecoverSingle(false, hash, now, nil)
 	}
 }
 
@@ -375,19 +345,19 @@ func (p *Processor) RecoverSingle(byRecover bool, hash string, now int64, value 
 		lastPendingEvent, has := p.pendingsUseByRecover.Get(hash)
 		if !has {
 			// 说明没有产生过异常点，就不需要恢复了
-			logger.Debugf("rule_eval:%s event:%v do not has pending event, not recover", p.Key(), event)
+			logger.Debugf("alert_eval_%d datasource_%d event:%s do not has pending event, not recover", p.rule.Id, p.datasourceId, event.Hash)
 			return
 		}
 
 		if now-lastPendingEvent.LastEvalTime < cachedRule.RecoverDuration {
-			logger.Debugf("rule_eval:%s event:%v not recover", p.Key(), event)
+			logger.Debugf("alert_eval_%d datasource_%d event:%s not recover", p.rule.Id, p.datasourceId, event.Hash)
 			return
 		}
 	}
 
 	// 如果设置了恢复条件，则不能在此处恢复，必须依靠 recoverPoint 来恢复
 	if event.RecoverConfig.JudgeType != models.Origin && !byRecover {
-		logger.Debugf("rule_eval:%s event:%v not recover", p.Key(), event)
+		logger.Debugf("alert_eval_%d datasource_%d event:%s not recover", p.rule.Id, p.datasourceId, event.Hash)
 		return
 	}
 
@@ -416,8 +386,8 @@ func (p *Processor) RecoverSingle(byRecover bool, hash string, now int64, value 
 
 func (p *Processor) handleEvent(events []*models.AlertCurEvent) {
 	var fireEvents []*models.AlertCurEvent
-	// severity 初始为 4, 一定为遇到比自己优先级高的事件
-	severity := 4
+	// severity 初始为最低优先级, 一定为遇到比自己优先级高的事件
+	severity := models.SeverityLowest
 	for _, event := range events {
 		if event == nil {
 			continue
@@ -438,17 +408,18 @@ func (p *Processor) handleEvent(events []*models.AlertCurEvent) {
 			continue
 		}
 
-		var preTriggerTime int64 // 第一个 pending event 的触发时间
+		var preEvalTime int64 // 第一个 pending event 的检测时间
 		preEvent, has := p.pendings.Get(event.Hash)
 		if has {
 			p.pendings.UpdateLastEvalTime(event.Hash, event.LastEvalTime)
-			preTriggerTime = preEvent.TriggerTime
+			preEvalTime = preEvent.FirstEvalTime
 		} else {
+			event.FirstEvalTime = event.LastEvalTime
 			p.pendings.Set(event.Hash, event)
-			preTriggerTime = event.TriggerTime
+			preEvalTime = event.FirstEvalTime
 		}
 
-		if event.LastEvalTime-preTriggerTime+int64(event.PromEvalInterval) >= int64(p.rule.PromForDuration) {
+		if event.LastEvalTime-preEvalTime+int64(event.PromEvalInterval) >= int64(p.rule.PromForDuration) {
 			fireEvents = append(fireEvents, event)
 			if severity > event.Severity {
 				severity = event.Severity
@@ -463,7 +434,7 @@ func (p *Processor) handleEvent(events []*models.AlertCurEvent) {
 func (p *Processor) inhibitEvent(events []*models.AlertCurEvent, highSeverity int) {
 	for _, event := range events {
 		if p.inhibit && event.Severity > highSeverity {
-			logger.Debugf("rule_eval:%s event:%+v inhibit highSeverity:%d", p.Key(), event, highSeverity)
+			logger.Debugf("alert_eval_%d datasource_%d event:%s inhibit highSeverity:%d", p.rule.Id, p.datasourceId, event.Hash, highSeverity)
 			continue
 		}
 		p.fireEvent(event)
@@ -477,16 +448,18 @@ func (p *Processor) fireEvent(event *models.AlertCurEvent) {
 		return
 	}
 
-	logger.Debugf("rule_eval:%s event:%+v fire", p.Key(), event)
+	message := "unknown"
+	defer func() {
+		logger.Infof("alert_eval_%d datasource_%d event-hash-%s %s", p.rule.Id, p.datasourceId, event.Hash, message)
+	}()
+
 	if fired, has := p.fires.Get(event.Hash); has {
 		p.fires.UpdateLastEvalTime(event.Hash, event.LastEvalTime)
 		event.FirstTriggerTime = fired.FirstTriggerTime
 		p.HandleFireEventHook(event)
 
 		if cachedRule.NotifyRepeatStep == 0 {
-			logger.Debugf("rule_eval:%s event:%+v repeat is zero nothing to do", p.Key(), event)
-			// 说明不想重复通知，那就直接返回了，nothing to do
-			// do not need to send alert again
+			message = "stalled, rule.notify_repeat_step is 0, no need to repeat notify"
 			return
 		}
 
@@ -495,21 +468,26 @@ func (p *Processor) fireEvent(event *models.AlertCurEvent) {
 			if cachedRule.NotifyMaxNumber == 0 {
 				// 最大可以发送次数如果是0，表示不想限制最大发送次数，一直发即可
 				event.NotifyCurNumber = fired.NotifyCurNumber + 1
+				message = fmt.Sprintf("fired, notify_repeat_step_matched(%d >= %d + %d * 60) notify_max_number_ignore(#%d / %d)", event.LastEvalTime, fired.LastSentTime, cachedRule.NotifyRepeatStep, event.NotifyCurNumber, cachedRule.NotifyMaxNumber)
 				p.pushEventToQueue(event)
 			} else {
 				// 有最大发送次数的限制，就要看已经发了几次了，是否达到了最大发送次数
 				if fired.NotifyCurNumber >= cachedRule.NotifyMaxNumber {
-					logger.Debugf("rule_eval:%s event:%+v reach max number", p.Key(), event)
+					message = fmt.Sprintf("stalled, notify_repeat_step_matched(%d >= %d + %d * 60) notify_max_number_not_matched(#%d / %d)", event.LastEvalTime, fired.LastSentTime, cachedRule.NotifyRepeatStep, fired.NotifyCurNumber, cachedRule.NotifyMaxNumber)
 					return
 				} else {
 					event.NotifyCurNumber = fired.NotifyCurNumber + 1
+					message = fmt.Sprintf("fired, notify_repeat_step_matched(%d >= %d + %d * 60) notify_max_number_matched(#%d / %d)", event.LastEvalTime, fired.LastSentTime, cachedRule.NotifyRepeatStep, event.NotifyCurNumber, cachedRule.NotifyMaxNumber)
 					p.pushEventToQueue(event)
 				}
 			}
+		} else {
+			message = fmt.Sprintf("stalled, notify_repeat_step_not_matched(%d < %d + %d * 60)", event.LastEvalTime, fired.LastSentTime, cachedRule.NotifyRepeatStep)
 		}
 	} else {
 		event.NotifyCurNumber = 1
 		event.FirstTriggerTime = event.TriggerTime
+		message = fmt.Sprintf("fired, first_trigger_time: %d", event.FirstTriggerTime)
 		p.HandleFireEventHook(event)
 		p.pushEventToQueue(event)
 	}
@@ -523,7 +501,7 @@ func (p *Processor) pushEventToQueue(e *models.AlertCurEvent) {
 
 	dispatch.LogEvent(e, "push_queue")
 	if !queue.EventQueue.PushFront(e) {
-		logger.Warningf("event_push_queue: queue is full, event:%+v", e)
+		logger.Warningf("alert_eval_%d datasource_%d event_push_queue: queue is full, event:%s", p.rule.Id, p.datasourceId, e.Hash)
 		p.Stats.CounterRuleEvalErrorTotal.WithLabelValues(fmt.Sprintf("%v", p.DatasourceId()), "push_event_queue", p.BusiGroupCache.GetNameByBusiGroupId(p.rule.GroupId), fmt.Sprintf("%v", p.rule.Id)).Inc()
 	}
 }
@@ -534,7 +512,7 @@ func (p *Processor) RecoverAlertCurEventFromDb() {
 
 	curEvents, err := models.AlertCurEventGetByRuleIdAndDsId(p.ctx, p.rule.Id, p.datasourceId)
 	if err != nil {
-		logger.Errorf("recover event from db for rule:%s failed, err:%s", p.Key(), err)
+		logger.Errorf("alert_eval_%d datasource_%d recover event from db failed, err:%s", p.rule.Id, p.datasourceId, err)
 		p.Stats.CounterRuleEvalErrorTotal.WithLabelValues(fmt.Sprintf("%v", p.DatasourceId()), "get_recover_event", p.BusiGroupCache.GetNameByBusiGroupId(p.rule.GroupId), fmt.Sprintf("%v", p.rule.Id)).Inc()
 		p.fires = NewAlertCurEventMap(nil)
 		return
@@ -543,6 +521,12 @@ func (p *Processor) RecoverAlertCurEventFromDb() {
 	fireMap := make(map[string]*models.AlertCurEvent)
 	pendingsUseByRecoverMap := make(map[string]*models.AlertCurEvent)
 	for _, event := range curEvents {
+		alertRule := p.alertRuleCache.Get(event.RuleId)
+		if alertRule == nil {
+			continue
+		}
+		event.NotifyRuleIds = alertRule.NotifyRuleIds
+
 		if event.Cate == models.HOST {
 			target, exists := p.TargetCache.Get(event.TargetIdent)
 			if exists && target.EngineName != p.EngineName && !(p.ctx.IsCenter && target.EngineName == "") {
@@ -581,7 +565,9 @@ func (p *Processor) fillTags(anomalyPoint models.AnomalyPoint) {
 	}
 
 	// handle rule tags
-	for _, tag := range p.rule.AppendTagsJSON {
+	tags := p.rule.AppendTagsJSON
+	tags = append(tags, "rulename="+p.rule.Name)
+	for _, tag := range tags {
 		arr := strings.SplitN(tag, "=", 2)
 
 		var defs = []string{
@@ -607,27 +593,25 @@ func (p *Processor) fillTags(anomalyPoint models.AnomalyPoint) {
 
 		tagsMap[arr[0]] = body.String()
 	}
-
-	tagsMap["rulename"] = p.rule.Name
 	p.tagsMap = tagsMap
 
 	// handle tagsArr
 	p.tagsArr = labelMapToArr(tagsMap)
 }
 
-func (p *Processor) mayHandleIdent() {
+func (p *Processor) mayHandleIdent(event *models.AlertCurEvent) {
 	// handle ident
-	if ident, has := p.tagsMap["ident"]; has {
+	if ident, has := event.TagsMap["ident"]; has {
 		if target, exists := p.TargetCache.Get(ident); exists {
-			p.target = target.Ident
-			p.targetNote = target.Note
+			event.TargetIdent = target.Ident
+			event.TargetNote = target.Note
 		} else {
-			p.target = ident
-			p.targetNote = ""
+			event.TargetIdent = ident
+			event.TargetNote = ""
 		}
 	} else {
-		p.target = ""
-		p.targetNote = ""
+		event.TargetIdent = ""
+		event.TargetNote = ""
 	}
 }
 

@@ -78,7 +78,7 @@ func (c *ConfigCache) syncConfigs() error {
 	decryptMap, decryptErr := models.ConfigUserVariableGetDecryptMap(c.ctx, c.privateKey, c.passWord)
 	if decryptErr != nil {
 		dumper.PutSyncRecord("user_variables", start.Unix(), -1, -1, "failed to query records: "+decryptErr.Error())
-		return errors.WithMessage(err, "failed to call ConfigUserVariableGetDecryptMap")
+		return errors.WithMessage(decryptErr, "failed to call ConfigUserVariableGetDecryptMap")
 	}
 
 	c.Set(decryptMap, stat.Total, stat.LastUpdated)
@@ -86,8 +86,6 @@ func (c *ConfigCache) syncConfigs() error {
 	ms := time.Since(start).Milliseconds()
 	c.stats.GaugeCronDuration.WithLabelValues("sync_user_variables").Set(float64(ms))
 	c.stats.GaugeSyncNumber.WithLabelValues("sync_user_variables").Set(float64(len(decryptMap)))
-
-	logger.Infof("timer: sync user_variables done, cost: %dms, number: %d", ms, len(decryptMap))
 	dumper.PutSyncRecord("user_variables", start.Unix(), ms, len(decryptMap), "success")
 
 	return nil

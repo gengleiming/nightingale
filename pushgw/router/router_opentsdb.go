@@ -6,8 +6,10 @@ import (
 	"io/ioutil"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/ccfos/nightingale/v6/pushgw/pstat"
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/prometheus/prompb"
@@ -39,7 +41,7 @@ func (m *HTTPMetric) Clean(ts int64) error {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			m.Value = f
 		} else {
-			return fmt.Errorf("unparseable value %v", v)
+			return fmt.Errorf("unparsable value %v", v)
 		}
 	case float64:
 		m.Value = v
@@ -50,7 +52,7 @@ func (m *HTTPMetric) Clean(ts int64) error {
 	case int:
 		m.Value = float64(v)
 	default:
-		return fmt.Errorf("unparseable value %v", v)
+		return fmt.Errorf("unparsable value %v", v)
 	}
 
 	// if timestamp bigger than 32 bits, likely in milliseconds
@@ -161,6 +163,8 @@ func (rt *Router) openTSDBPut(c *gin.Context) {
 		return
 	}
 
+	queueid := fmt.Sprint(atomic.AddUint64(&globalCounter, 1) % uint64(rt.Pushgw.WriterOpt.QueueNumber))
+
 	var (
 		succ int
 		fail int
@@ -191,22 +195,21 @@ func (rt *Router) openTSDBPut(c *gin.Context) {
 
 		host, has := arr[i].Tags["ident"]
 		if has {
-			// register host
-			ids[host] = struct{}{}
+			if rt.Pushgw.GetHeartbeatFromMetric {
+				// register host
+				ids[host] = struct{}{}
+			}
 
 			// fill tags
 			target, has := rt.TargetCache.Get(host)
 			if has {
 				rt.AppendLabels(pt, target, rt.BusiGroupCache)
 			}
+
+			pstat.CounterSampleReceivedByIdent.WithLabelValues(host).Inc()
 		}
 
-		if host != "" {
-			err = rt.ForwardByIdent(c.ClientIP(), host, pt)
-		} else {
-			err = rt.ForwardByMetric(c.ClientIP(), arr[i].Metric, pt)
-		}
-
+		err = rt.ForwardToQueue(c.ClientIP(), queueid, pt)
 		if err != nil {
 			c.String(rt.Pushgw.WriterOpt.OverLimitStatusCode, err.Error())
 			return
@@ -216,7 +219,7 @@ func (rt *Router) openTSDBPut(c *gin.Context) {
 	}
 
 	if succ > 0 {
-		CounterSampleTotal.WithLabelValues("opentsdb").Add(float64(succ))
+		pstat.CounterSampleTotal.WithLabelValues("opentsdb").Add(float64(succ))
 		rt.IdentSet.MSet(ids)
 	}
 
